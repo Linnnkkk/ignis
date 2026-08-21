@@ -111,6 +111,104 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/plugins", pluginRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 
+// ★ Vitreus 构建标记：排障用（前端探针读它确认沙箱里跑的是哪个 bundle——
+//   曾经"修复推了但手机跑旧 server"排查一整天，加这个一眼分辨）
+app.get("/__vitreus", (req, res) => {
+  res.json({ bundle: "v8-asarfull", nodeAsar: true, i18nFallback: true });
+});
+
+// ★ Vitreus：Node 侧 asar/asar.gz 解包（对齐官方 Docker entrypoint 的用户自备流程：
+//   用户从 obsidianmd/obsidian-releases 下载 obsidian-<ver>.asar.gz 或 obsidian.asar，
+//   app 只收这两种格式，不分发任何 Obsidian 内容——合规红线）。
+//   ArkTS 解包器跳过 unpacked 文件导致 i18n 缺失（1.13+ 的 i18n 是 unpacked），
+//   这里 Node 解包 + unpacked 清单 + 版本警告（官方也 pin 1.12.7，新版本 shim 可能 misbehave）。
+  const zlib = require("zlib");
+(function unpackAsarIfPresent() {
+  // 支持两种自备格式：obsidian.asar.gz（官方 releases 默认）/ obsidian.asar
+  const gzPath = path.join(config.obsidianAssetsPath, "obsidian.asar.gz");
+  const asarPath = path.join(config.obsidianAssetsPath, "obsidian.asar");
+  let workPath = null;
+  let asarBuf = null;
+  try {
+    if (fs.existsSync(gzPath)) {
+      console.log("[vitreus-asar] found obsidian.asar.gz, gunzip...");
+      asarBuf = zlib.gunzipSync(fs.readFileSync(gzPath));
+      workPath = gzPath;
+    } else if (fs.existsSync(asarPath)) {
+      asarBuf = fs.readFileSync(asarPath);
+      workPath = asarPath;
+    } else {
+      console.log("[vitreus-asar] no obsidian.asar/.asar.gz found, skip");
+      return;
+    }
+
+    const head = asarBuf.subarray(0, 16);
+    const jsonLen = head.readUInt32LE(12);
+    const header = JSON.parse(asarBuf.subarray(16, 16 + jsonLen).toString("utf8"));
+    let base = 16 + jsonLen;
+    base = (base + 3) & ~3; // 4字节对齐
+
+    // 版本警告（对齐官方：版本 ≠ 1.12.7 时提示 shim 兼容风险）
+    try {
+      const pkg = header.files && header.files["package.json"];
+      if (pkg) {
+        const pkgTxt = asarBuf.subarray(base + Number(pkg.offset), base + Number(pkg.offset) + pkg.size).toString("utf8");
+        const ver = JSON.parse(pkgTxt).version;
+        if (ver && ver !== "1.12.7") {
+          console.warn(`[vitreus-asar] WARNING: Obsidian ${ver} — shim 兼容性最佳版本是 1.12.7（官方 Docker 同款 pin），新版可能异常`);
+        }
+      }
+    } catch (e) { /* 版本读取失败不阻断 */ }
+
+    let fileCount = 0;
+    let unpackedCount = 0;
+    const unpackedList = [];
+    function walk(node, prefix) {
+      if (!node.files) return;
+      for (const [name, meta] of Object.entries(node.files)) {
+        const rel = prefix ? prefix + "/" + name : name;
+        if (meta.files) {
+          walk(meta, rel);
+        } else {
+          if (meta.unpacked) {
+            unpackedCount++;
+            if (unpackedList.length < 30) unpackedList.push(rel);
+            continue;
+          }
+          const target = path.join(config.obsidianAssetsPath, rel);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, asarBuf.subarray(base + Number(meta.offset), base + Number(meta.offset) + meta.size));
+          fileCount++;
+        }
+      }
+    }
+    walk(header, "");
+    console.log(`[vitreus-asar] extracted ${fileCount} files, ${unpackedCount} unpacked (no data in asar):`);
+    if (unpackedList.length > 0) {
+      console.log("[vitreus-asar] unpacked sample:", unpackedList.join(", "));
+    }
+    // 成功解包后删除原始包（释放 ~9MB；升级时用户重新导入即可）
+    try { fs.unlinkSync(workPath); } catch (e) { /* 删不掉无碍 */ }
+  } catch (e) {
+    console.error("[vitreus-asar] extract failed:", e.message);
+  }
+})();
+
+// ★ i18n 兜底：obsidian.asar 的 i18n/ 目录常是 unpacked 类型（asar 体内无数据，
+// 解包器跳过）→ 手机上缺 i18n 文件 → 404 → ArkWeb fetch 抛 NetworkError →
+// Obsidian 启动链断（空白页真凶）。真实文件优先（static 在后面接不住才到这——
+// 所以这里先自查磁盘），没有才返回空但合法的内容让 i18n loader fallback。
+app.get("/i18n/:file", (req, res) => {
+  const file = path.basename(req.params.file || "");
+  const realPath = path.join(config.obsidianAssetsPath, "i18n", file);
+  if (fs.existsSync(realPath)) {
+    res.type("text/plain").sendFile(realPath);
+    return;
+  }
+  console.log("[vitreus] i18n fallback (not in assets):", file);
+  res.type("text/plain").status(200).send("");
+});
+
 // Serve vault files for resource URLs (images, attachments, etc.)
 // Vault ID is the first path segment: /vault-files/<vault-id>/path/to/file
 app.use("/vault-files", (req, res, next) => {
@@ -184,8 +282,8 @@ app.use(express.static(path.join(REPO_ROOT, "packages", "shim", "dist")));
 
 app.use(express.static(config.obsidianAssetsPath));
 
-const server = app.listen(config.port, async () => {
-  console.log(`[ignis] Server running on http://localhost:${config.port}`);
+const server = app.listen(config.port, config.host, async () => {
+  console.log(`[ignis] Server running on http://${config.host}:${config.port}`);
   console.log(`[ignis] Vault root: ${config.vaultRoot}`);
   console.log(`[ignis] Vaults: ${Object.keys(config.vaults).join(", ")}`);
 

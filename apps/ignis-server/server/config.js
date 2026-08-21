@@ -81,6 +81,7 @@ let vaults = discoverVaults();
 
 module.exports = {
   port: process.env.PORT || 8080,
+  host: process.env.LISTEN_HOST || "127.0.0.1",
   vaultRoot,
   dataRoot,
   get vaults() {
