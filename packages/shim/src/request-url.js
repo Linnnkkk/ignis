@@ -9,6 +9,19 @@ async function proxyRequestUrl(request) {
     request = { url: request };
   }
 
+  // ★ 排障：requestUrl 是 Obsidian 主网络通道，成功/失败都现形
+  console.log("[shim:requestUrl] CALL " + String(request.url).slice(0, 150));
+  try {
+    const out = await proxyRequestUrlInner(request);
+    console.log("[shim:requestUrl] OK " + String(request.url).slice(0, 100) + " -> " + out.status);
+    return out;
+  } catch (e) {
+    console.error("[shim:requestUrl] FAIL " + String(request.url).slice(0, 150) + " : " + (e && e.message));
+    throw e;
+  }
+}
+
+async function proxyRequestUrlInner(request) {
   // Same-origin requests don't need the proxy, and allowlisted hosts are fetched directly.
   if (isSameOrigin(request.url) || isDirectFetchHost(request.url)) {
     const res = await fetch(request.url, {

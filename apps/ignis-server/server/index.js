@@ -58,6 +58,9 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: settings.MAX_BODY_BACKSTOP }));
 app.use(compression());
 
+// LAN 共享鉴权：设置了 IGNIS_AUTH_USER/PASS 且请求来自局域网时要求 Digest 认证（digest-auth.js）
+app.use(require("./digest-auth").createDigestAuth());
+
 // logger middleware
 app.use((req, res, next) => {
   const start = Date.now();

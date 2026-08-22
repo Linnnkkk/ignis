@@ -1,5 +1,8 @@
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
 const settings = require("../../settings");
+const config = require("../../config");
 const { sanitizeError } = require("@ignis/server-core");
 const {
   signinCredentials,
@@ -16,6 +19,27 @@ router.post("/", async (req, res) => {
 
   if (!url) {
     return res.status(400).json({ error: "Missing url" });
+  }
+
+  // Obsidian 1.13+ 渲染器会请求 app://obsidian.md/...（Electron 自定义协议，
+  // 读 Obsidian 自带资源：语言包/字体/内置图标）。真 Electron 里由主进程 handle；
+  // web 里经 shim 走到本代理。这里直接映射到 obsidian-assets/ 本地文件，
+  // 不做公网校验（是本地资源不是外网请求）——必须在 assertPublicUrl 之前返回。
+  if (url.startsWith("app://obsidian.md/")) {
+    const rel = decodeURIComponent(url.slice("app://obsidian.md/".length).split("?")[0]);
+    const safe = path.normalize(rel).replace(/^(\.\.[/\\])+/, "");
+    const filePath = path.join(config.obsidianAssetsPath, safe);
+    // 只允许 obsidian-assets 内（防路径穿越）
+    if (!filePath.startsWith(path.resolve(config.obsidianAssetsPath))) {
+      return res.status(403).json({ error: "app:// path escapes assets" });
+    }
+    fs.readFile(filePath, (err, data) => {
+      if (err) {
+        return res.status(404).json({ error: "app:// resource not found: " + safe });
+      }
+      res.status(200).send(data);
+    });
+    return;
   }
 
   const proxyMode = settings.get("proxyMode");
