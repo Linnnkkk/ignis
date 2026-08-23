@@ -2,7 +2,7 @@ const express = require("express");
 const fs = require("fs");
 const config = require("../config");
 const path = require("path");
-const bootstrapRoutes = require("./bootstrap");
+const bootstrapCache = require("../bootstrap-cache");
 const { withWatcherStopped } = require("../vault-lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
 
@@ -75,7 +75,7 @@ router.post("/create", async (req, res) => {
     });
 
     config.refreshVaults();
-    bootstrapRoutes.invalidateVault(name);
+    bootstrapCache.invalidateVault(name);
 
     res.json({ ok: true, id: name, path: vaultPath });
   } catch (e) {
@@ -119,8 +119,8 @@ router.post("/rename", async (req, res) => {
     );
 
     config.refreshVaults();
-    bootstrapRoutes.invalidateVault(vaultId);
-    bootstrapRoutes.invalidateVault(newName);
+    bootstrapCache.invalidateVault(vaultId);
+    bootstrapCache.invalidateVault(newName);
 
     res.json({ ok: true, id: newName, path: newPath });
   } catch (e) {
@@ -149,7 +149,7 @@ router.delete("/remove", async (req, res) => {
     );
 
     config.refreshVaults();
-    bootstrapRoutes.invalidateVault(vaultId);
+    bootstrapCache.invalidateVault(vaultId);
 
     res.json({ ok: true });
   } catch (e) {

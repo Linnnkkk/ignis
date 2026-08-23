@@ -1,7 +1,7 @@
 const express = require("express");
 const { writeCoalescer } = require("@ignis/server-core");
 const settings = require("../settings");
-const bootstrapRoutes = require("./bootstrap");
+const bootstrapCache = require("../bootstrap-cache");
 
 const router = express.Router();
 
@@ -96,7 +96,7 @@ router.post("/", (req, res) => {
   applySettings(effective);
 
   // Cache sizes ride in the bootstrap response; clear it so the next page load picks up new values.
-  bootstrapRoutes.invalidateAll();
+  bootstrapCache.invalidateAll();
 
   res.json(effective);
 });

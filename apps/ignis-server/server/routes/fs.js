@@ -17,7 +17,7 @@ const {
   cancelPendingSubtree,
   flushPendingSubtree,
 } = writeCoalescer;
-const bootstrapRoutes = require("./bootstrap");
+const bootstrapCache = require("../bootstrap-cache");
 
 const router = express.Router();
 
@@ -37,7 +37,7 @@ function getVaultRoot(req, res) {
 
 function invalidateBootstrap(req) {
   if (req._vaultId) {
-    bootstrapRoutes.invalidateVault(req._vaultId);
+    bootstrapCache.invalidateVault(req._vaultId);
   }
 }
 
@@ -463,7 +463,7 @@ router.get("/tree", async (req, res) => {
 
   try {
     // grab the tree from the bootstrap cache.
-    const entry = await bootstrapRoutes.getOrBuild(req._vaultId);
+    const entry = await bootstrapCache.getOrBuild(req._vaultId);
 
     if (!entry) {
       return res.status(404).json({ error: "Vault not found" });

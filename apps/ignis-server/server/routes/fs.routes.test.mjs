@@ -24,7 +24,7 @@ fs.mkdirSync(vaultDir, { recursive: true });
 const config = require("../config");
 config.refreshVaults();
 const fsRouter = require("./fs");
-const bootstrap = require("./bootstrap");
+const bootstrapCache = require("../bootstrap-cache");
 const { writeCoalescer } = require("@ignis/server-core");
 const express = require("express");
 
@@ -268,7 +268,7 @@ describe("tree route conditional fetch via ETag", () => {
   });
 });
 
-describe("bootstrap walkTree", () => {
+describe("bootstrap cache walkTree", () => {
   it("reports the buffered size for a pending coalesced write", async () => {
     const p = abs("x.md");
 
@@ -276,7 +276,7 @@ describe("bootstrap walkTree", () => {
     await writeCoalescer.writeCoalesced(p, "v2bootstrap", "utf-8");
     expect(writeCoalescer.getPending(p)).not.toBeNull();
 
-    const { tree } = await bootstrap.walkTree(vaultDir);
+    const { tree } = await bootstrapCache.walkTree(vaultDir);
 
     expect(tree["x.md"].size).toBe(Buffer.byteLength("v2bootstrap"));
   });

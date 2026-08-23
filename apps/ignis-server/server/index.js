@@ -82,6 +82,7 @@ const proxyRoutes = require("./routes/proxy");
 const versionRoutes = require("./routes/version");
 const settingsRoutes = require("./routes/settings");
 const bootstrapRoutes = require("./routes/bootstrap");
+const bootstrapCache = require("./bootstrap-cache");
 const vaultLifecycle = require("./vault-lifecycle");
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
@@ -243,7 +244,7 @@ const server = app.listen(config.port, async () => {
     ...bundledPluginDirs.map((d) => d.bundledPluginId),
   ]);
 
-  bootstrapRoutes
+  bootstrapCache
     .warmUp()
     .catch((e) => console.warn("[bootstrap] warm-up error:", e.message));
 });
@@ -256,9 +257,7 @@ vaultLifecycle.setWss(wss);
 wireDemoWebSocket(server);
 
 // Invalidate stored tree on any file change.
-watcher.addGlobalListener((vaultId) =>
-  bootstrapRoutes.invalidateVault(vaultId),
-);
+watcher.addGlobalListener((vaultId) => bootstrapCache.invalidateVault(vaultId));
 
 // Per-client listeners die along with their watcher.
 watcher.onWatcherRebuild((vaultId) => wss.closeVaultSockets(vaultId));
