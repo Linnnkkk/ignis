@@ -10,8 +10,14 @@ let idleStopMs = IDLE_STOP_MS;
 // Map<vaultId, { watcher, listeners: Set<fn>, vaultPath, idleTimer, ready, errorCount, firstError, enospc }>
 const vaultWatchers = new Map();
 
-// Set<fn(vaultId, event)>, fired for events on all vaults
+// Set<fn(vaultId, event)>, fires for events on all vaults
 const globalListeners = new Set();
+
+// Set<fn(vaultId, info)>, fires once per watcher ready
+const startListeners = new Set();
+
+// Set<fn(vaultId)>, fires on watcher teardown
+const rebuildListeners = new Set();
 
 function cancelIdleStop(entry) {
   clearTimeout(entry.idleTimer);
@@ -25,13 +31,47 @@ function countTrackedPaths(watchedDirs) {
   );
 }
 
+function notifyStart(vaultId, info) {
+  for (const fn of startListeners) {
+    try {
+      fn(vaultId, info);
+    } catch (e) {
+      console.error("[watcher] Start listener error:", e);
+    }
+  }
+}
+
+function notifyRebuild(vaultId) {
+  for (const fn of rebuildListeners) {
+    try {
+      fn(vaultId);
+    } catch (e) {
+      console.error("[watcher] Rebuild listener error:", e);
+    }
+  }
+}
+
+function isDead(entry) {
+  return entry.ready && countTrackedPaths(entry.watcher.getWatched()) === 0;
+}
+
 function startWatching(vaultId, vaultPath) {
   const existing = vaultWatchers.get(vaultId);
+  let rebuilt = false;
 
   if (existing) {
-    cancelIdleStop(existing);
+    if (!isDead(existing)) {
+      cancelIdleStop(existing);
 
-    return existing;
+      return existing;
+    }
+
+    console.warn(
+      `[watcher] Rebuilding watcher tracking no paths on vault: ${vaultId}`,
+    );
+    stopWatching(vaultId);
+    notifyRebuild(vaultId);
+    rebuilt = true;
   }
 
   const watcher = chokidar.watch(vaultPath, {
@@ -137,15 +177,15 @@ function startWatching(vaultId, vaultPath) {
         console.log(
           `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked`,
         );
+      } else {
+        const hint = entry.enospc ? " Raise fs.inotify.max_user_watches." : "";
 
-        return;
+        console.warn(
+          `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked, ${entry.errorCount} errors, ~${tracked - entry.errorCount} watched.${hint}`,
+        );
       }
 
-      const hint = entry.enospc ? " Raise fs.inotify.max_user_watches." : "";
-
-      console.warn(
-        `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked, ${entry.errorCount} errors, ~${tracked - entry.errorCount} watched.${hint}`,
-      );
+      notifyStart(vaultId, { rebuilt, tracked, errors: entry.errorCount });
     });
 
   vaultWatchers.set(vaultId, entry);
@@ -178,6 +218,22 @@ function addGlobalListener(fn) {
 
 function removeGlobalListener(fn) {
   globalListeners.delete(fn);
+}
+
+function onWatcherStart(fn) {
+  startListeners.add(fn);
+}
+
+function offWatcherStart(fn) {
+  startListeners.delete(fn);
+}
+
+function onWatcherRebuild(fn) {
+  rebuildListeners.add(fn);
+}
+
+function offWatcherRebuild(fn) {
+  rebuildListeners.delete(fn);
 }
 
 function addListener(vaultId, fn) {
@@ -215,6 +271,8 @@ function _reset() {
   }
 
   globalListeners.clear();
+  startListeners.clear();
+  rebuildListeners.clear();
 
   return Promise.all(closings);
 }
@@ -226,6 +284,10 @@ module.exports = {
   removeListener,
   addGlobalListener,
   removeGlobalListener,
+  onWatcherStart,
+  offWatcherStart,
+  onWatcherRebuild,
+  offWatcherRebuild,
   _setIdleStopMs,
   _reset,
 };

@@ -260,6 +260,9 @@ watcher.addGlobalListener((vaultId) =>
   bootstrapRoutes.invalidateVault(vaultId),
 );
 
+// Per-client listeners die along with their watcher.
+watcher.onWatcherRebuild((vaultId) => wss.closeVaultSockets(vaultId));
+
 function vaultForPath(absPath) {
   const target = path.resolve(absPath);
 
