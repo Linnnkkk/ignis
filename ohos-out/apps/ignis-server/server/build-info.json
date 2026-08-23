@@ -1,5 +1,5 @@
 {
-  "semver": "0.8.9",
-  "build": "sumiyma",
-  "version": "0.8.9+sumiyma"
+  "semver": "0.8.10",
+  "build": "vitreus",
+  "version": "0.8.10+vitreus"
 }

@@ -23513,7 +23513,7 @@ var require_config = __commonJS({
       console.error("[config] Failed to create DATA_ROOT:", dataRoot, e.message);
     }
     function discoverVaults() {
-      const vaults2 = {};
+      const vaults2 = /* @__PURE__ */ Object.create(null);
       try {
         const entries = fs2.readdirSync(vaultRoot, { withFileTypes: true });
         for (const entry of entries) {
@@ -23619,6 +23619,7 @@ var require_settings = __commonJS({
     var KEYS = Object.keys(DEFAULTS);
     var ENV_ONLY_KEYS = ["wsOrigins", "proxyAllowPrivate"];
     var MAX_BODY_BACKSTOP = 500 * 1024 * 1024;
+    var MAX_WRITE_COALESCE_MS = 6e4;
     function parseList(raw) {
       return raw.split(",").map((s) => s.trim()).filter(Boolean);
     }
@@ -23679,6 +23680,7 @@ var require_settings = __commonJS({
       ENV_ONLY_KEYS,
       PROXY_MODES,
       MAX_BODY_BACKSTOP,
+      MAX_WRITE_COALESCE_MS,
       getAll,
       get,
       update
@@ -23762,14 +23764,36 @@ var require_write_coalescer = __commonJS({
     var fs2 = require("fs");
     var path2 = require("path");
     var FLUSH_TIMEOUT_MS = 1e4;
+    var MAX_FLUSH_ATTEMPTS = 6;
+    var FLUSH_RETRY_BACKOFF_MS = [2e3, 4e3, 8e3, 16e3, 3e4];
     var writeCoalesceMs = 0;
+    var flushRetryBackoffMs = FLUSH_RETRY_BACKOFF_MS;
     function configure(opts) {
       if (typeof opts?.writeCoalesceMs === "number") {
         writeCoalesceMs = opts.writeCoalesceMs;
       }
+      if (Array.isArray(opts?.flushRetryBackoffMs) && opts.flushRetryBackoffMs.length) {
+        flushRetryBackoffMs = opts.flushRetryBackoffMs;
+      }
     }
     var lastWriteTime = /* @__PURE__ */ new Map();
     var pending = /* @__PURE__ */ new Map();
+    var giveUpSubs = /* @__PURE__ */ new Set();
+    function onFlushGiveUp(fn) {
+      giveUpSubs.add(fn);
+      return () => {
+        giveUpSubs.delete(fn);
+      };
+    }
+    function emitGiveUp(absPath, err) {
+      for (const fn of giveUpSubs) {
+        try {
+          fn(absPath, err);
+        } catch (e) {
+          console.error("[write-coalesce] give-up subscriber threw:", e);
+        }
+      }
+    }
     async function writeToDisk(absPath, data, encoding) {
       await fs2.promises.writeFile(
         absPath,
@@ -23780,12 +23804,32 @@ var require_write_coalescer = __commonJS({
       try {
         const stat = await fs2.promises.stat(absPath);
         return { mtime: stat.mtimeMs, size: stat.size };
-      } catch (e) {
-        if (e.code === "ENOENT") {
-          return { mtime: Date.now(), size: estimateSize(data, encoding) };
-        }
-        throw e;
+      } catch {
+        return { mtime: Date.now(), size: estimateSize(data, encoding) };
       }
+    }
+    function requeueFailed(absPath, entry, err) {
+      if (pending.has(absPath)) {
+        return;
+      }
+      const attempts = entry.attempts + 1;
+      if (attempts > MAX_FLUSH_ATTEMPTS) {
+        console.error(
+          `[write-coalesce] Giving up on ${absPath} after ${MAX_FLUSH_ATTEMPTS} retries:`,
+          err
+        );
+        emitGiveUp(absPath, err);
+        return;
+      }
+      const retry = {
+        data: entry.data,
+        encoding: entry.encoding,
+        timer: null,
+        attempts
+      };
+      const delay = flushRetryBackoffMs[Math.min(attempts - 1, flushRetryBackoffMs.length - 1)];
+      pending.set(absPath, retry);
+      retry.timer = setTimeout(() => flushEntry(absPath), delay);
     }
     function flushEntry(absPath) {
       const entry = pending.get(absPath);
@@ -23797,10 +23841,7 @@ var require_write_coalescer = __commonJS({
       const { data, encoding } = entry;
       writeToDisk(absPath, data, encoding).catch((err) => {
         console.error(`[write-coalesce] Flush failed for ${absPath}:`, err);
-        if (!pending.has(absPath)) {
-          pending.set(absPath, { data, encoding, timer: null });
-          scheduleFlush(absPath);
-        }
+        requeueFailed(absPath, entry, err);
       });
     }
     function scheduleFlush(absPath) {
@@ -23831,12 +23872,14 @@ var require_write_coalescer = __commonJS({
       if (existing) {
         existing.data = data;
         existing.encoding = encoding;
+        existing.attempts = 0;
         scheduleFlush(absPath);
       } else {
         pending.set(absPath, {
           data,
           encoding,
-          timer: null
+          timer: null,
+          attempts: 0
         });
         scheduleFlush(absPath);
       }
@@ -23870,10 +23913,7 @@ var require_write_coalescer = __commonJS({
         await writeToDisk(absPath, data, encoding);
         return true;
       } catch (e) {
-        if (!pending.has(absPath)) {
-          pending.set(absPath, { data, encoding, timer: null });
-          scheduleFlush(absPath);
-        }
+        requeueFailed(absPath, entry, e);
         throw e;
       }
     }
@@ -23932,6 +23972,7 @@ var require_write_coalescer = __commonJS({
       }
       pending.clear();
       lastWriteTime.clear();
+      giveUpSubs.clear();
     }
     module2.exports = {
       writeCoalesced,
@@ -23941,6 +23982,7 @@ var require_write_coalescer = __commonJS({
       cancelPendingSubtree,
       flushPendingSubtree,
       flushAll: flushAll2,
+      onFlushGiveUp,
       configure,
       _reset
     };
@@ -29419,11 +29461,25 @@ var require_watcher = __commonJS({
   "packages/server-core/src/watcher.js"(exports2, module2) {
     var chokidar = require_chokidar();
     var path2 = require("path");
-    var fs2 = require("fs");
+    var IDLE_STOP_MS = 10 * 60 * 1e3;
+    var idleStopMs = IDLE_STOP_MS;
     var vaultWatchers = /* @__PURE__ */ new Map();
+    var globalListeners = /* @__PURE__ */ new Set();
+    function cancelIdleStop(entry) {
+      clearTimeout(entry.idleTimer);
+      entry.idleTimer = null;
+    }
+    function countTrackedPaths(watchedDirs) {
+      return Object.values(watchedDirs).reduce(
+        (acc, names) => acc + names.length,
+        0
+      );
+    }
     function startWatching(vaultId, vaultPath) {
-      if (vaultWatchers.has(vaultId)) {
-        return vaultWatchers.get(vaultId);
+      const existing = vaultWatchers.get(vaultId);
+      if (existing) {
+        cancelIdleStop(existing);
+        return existing;
       }
       const watcher2 = chokidar.watch(vaultPath, {
         persistent: true,
@@ -29437,7 +29493,16 @@ var require_watcher = __commonJS({
           // .git directories
         ]
       });
-      const entry = { watcher: watcher2, listeners: /* @__PURE__ */ new Set(), vaultPath };
+      const entry = {
+        watcher: watcher2,
+        listeners: /* @__PURE__ */ new Set(),
+        vaultPath,
+        idleTimer: null,
+        ready: false,
+        errorCount: 0,
+        firstError: null,
+        enospc: false
+      };
       function emit(type, fullPath, stat) {
         const rel = path2.relative(vaultPath, fullPath).replace(/\\/g, "/");
         const event = { type, path: rel };
@@ -29455,21 +29520,18 @@ var require_watcher = __commonJS({
             console.error("[watcher] Listener error:", e);
           }
         }
+        for (const fn of globalListeners) {
+          try {
+            fn(vaultId, event);
+          } catch (e) {
+            console.error("[watcher] Global listener error:", e);
+          }
+        }
       }
-      watcher2.on("add", (fullPath) => {
-        try {
-          const stat = fs2.statSync(fullPath);
-          emit("created", fullPath, stat);
-        } catch {
-          emit("created", fullPath, null);
-        }
-      }).on("change", (fullPath) => {
-        try {
-          const stat = fs2.statSync(fullPath);
-          emit("modified", fullPath, stat);
-        } catch {
-          emit("modified", fullPath, null);
-        }
+      watcher2.on("add", (fullPath, stats) => {
+        emit("created", fullPath, stats || null);
+      }).on("change", (fullPath, stats) => {
+        emit("modified", fullPath, stats || null);
       }).on("unlink", (fullPath) => {
         emit("deleted", fullPath, null);
       }).on("addDir", (fullPath) => {
@@ -29479,24 +29541,65 @@ var require_watcher = __commonJS({
       }).on("unlinkDir", (fullPath) => {
         emit("deleted", fullPath, null);
       }).on("error", (err) => {
-        console.error(`[watcher] Error on vault "${vaultId}":`, err.message);
+        if (entry.ready) {
+          console.error(`[watcher] Error on vault "${vaultId}":`, err.message);
+          return;
+        }
+        entry.errorCount++;
+        entry.enospc = entry.enospc || err.code === "ENOSPC";
+        if (entry.errorCount === 1) {
+          entry.firstError = {
+            message: err.message,
+            code: err.code,
+            path: err.path
+          };
+          console.error(
+            `[watcher] Error on vault "${vaultId}"${err.path ? ` at ${err.path}` : ""}:`,
+            err.message
+          );
+        }
+      }).on("ready", () => {
+        entry.ready = true;
+        const tracked = countTrackedPaths(watcher2.getWatched());
+        if (entry.errorCount === 0) {
+          console.log(
+            `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked`
+          );
+          return;
+        }
+        const hint = entry.enospc ? " Raise fs.inotify.max_user_watches." : "";
+        console.warn(
+          `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked, ${entry.errorCount} errors, ~${tracked - entry.errorCount} watched.${hint}`
+        );
       });
       vaultWatchers.set(vaultId, entry);
+      entry.idleTimer = setTimeout(() => stopWatching(vaultId), idleStopMs);
       console.log(`[watcher] Started watching vault: ${vaultId}`);
       return entry;
     }
     function stopWatching(vaultId) {
       const entry = vaultWatchers.get(vaultId);
-      if (entry) {
-        entry.watcher.close();
-        entry.listeners.clear();
-        vaultWatchers.delete(vaultId);
-        console.log(`[watcher] Stopped watching vault: ${vaultId}`);
+      if (!entry) {
+        return;
       }
+      cancelIdleStop(entry);
+      entry.listeners.clear();
+      vaultWatchers.delete(vaultId);
+      console.log(`[watcher] Stopped watching vault: ${vaultId}`);
+      return entry.watcher.close().catch((e) => {
+        console.error(`[watcher] Close failed on vault "${vaultId}":`, e.message);
+      });
+    }
+    function addGlobalListener(fn) {
+      globalListeners.add(fn);
+    }
+    function removeGlobalListener(fn) {
+      globalListeners.delete(fn);
     }
     function addListener(vaultId, fn) {
       const entry = vaultWatchers.get(vaultId);
       if (entry) {
+        cancelIdleStop(entry);
         entry.listeners.add(fn);
       }
     }
@@ -29505,11 +29608,32 @@ var require_watcher = __commonJS({
       if (entry) {
         entry.listeners.delete(fn);
         if (entry.listeners.size === 0) {
-          stopWatching(vaultId);
+          clearTimeout(entry.idleTimer);
+          entry.idleTimer = setTimeout(() => stopWatching(vaultId), idleStopMs);
         }
       }
     }
-    module2.exports = { startWatching, stopWatching, addListener, removeListener };
+    function _setIdleStopMs(ms) {
+      idleStopMs = ms ?? IDLE_STOP_MS;
+    }
+    function _reset() {
+      const closings = [];
+      for (const vaultId of vaultWatchers.keys()) {
+        closings.push(stopWatching(vaultId));
+      }
+      globalListeners.clear();
+      return Promise.all(closings);
+    }
+    module2.exports = {
+      startWatching,
+      stopWatching,
+      addListener,
+      removeListener,
+      addGlobalListener,
+      removeGlobalListener,
+      _setIdleStopMs,
+      _reset
+    };
   }
 });
 
@@ -33367,6 +33491,15 @@ var require_ws2 = __commonJS({
           }
         }
       };
+      wss2.closeVaultSockets = function(vaultId) {
+        const clients = clientsByVault.get(vaultId);
+        if (!clients) {
+          return;
+        }
+        for (const ws of Array.from(clients)) {
+          ws.close(4002, "Vault changed");
+        }
+      };
       wss2.channel = function(name) {
         return {
           on(type, handler) {
@@ -33462,6 +33595,9 @@ var require_ws2 = __commonJS({
               e.message
             );
           }
+        });
+        ws.on("error", (e) => {
+          console.warn(`[ws] Socket error on vault "${vaultId}":`, e.message);
         });
         ws.on("close", () => {
           console.log(`[ws] Client disconnected from vault: ${vaultId}`);
@@ -33570,7 +33706,7 @@ var require_path_utils = __commonJS({
       const prefix = base.endsWith(path2.sep) ? base : base + path2.sep;
       return child.startsWith(prefix);
     }
-    function resolveVaultPath(vaultRoot, relativePath) {
+    function resolveVaultPath2(vaultRoot, relativePath) {
       if (relativePath === null || relativePath === void 0) {
         return null;
       }
@@ -33590,7 +33726,7 @@ var require_path_utils = __commonJS({
       }
       return resolved;
     }
-    module2.exports = { encodeContentDispositionFilename, resolveVaultPath };
+    module2.exports = { encodeContentDispositionFilename, resolveVaultPath: resolveVaultPath2 };
   }
 });
 
@@ -33613,7 +33749,7 @@ var require_src2 = __commonJS({
     var { setupWebSocket: setupWebSocket2 } = require_ws2();
     var {
       encodeContentDispositionFilename,
-      resolveVaultPath
+      resolveVaultPath: resolveVaultPath2
     } = require_path_utils();
     var { sanitizeError } = require_errors();
     module2.exports = {
@@ -33621,7 +33757,7 @@ var require_src2 = __commonJS({
       watcher: watcher2,
       setupWebSocket: setupWebSocket2,
       encodeContentDispositionFilename,
-      resolveVaultPath,
+      resolveVaultPath: resolveVaultPath2,
       sanitizeError
     };
   }
@@ -34074,6 +34210,8 @@ var require_bootstrap = __commonJS({
     var router = express2.Router();
     var cache = /* @__PURE__ */ new Map();
     var pendingBuilds = /* @__PURE__ */ new Map();
+    var bootNonce = require("crypto").randomBytes(6).toString("hex");
+    var revisionCounter = 0;
     function preCompress(buf) {
       return Promise.all([
         new Promise((resolve, reject) => {
@@ -34175,12 +34313,14 @@ var require_bootstrap = __commonJS({
         return cached;
       }
       const t0 = Date.now();
+      const etag = '"' + bootNonce + "-" + ++revisionCounter + '"';
       const vault = buildVaultInfo(vaultId, vaultPath);
       const { tree, dirMtimes } = await walkTree(vaultPath);
       const response = {
         vault,
         vaultList: buildVaultList(),
         tree,
+        treeRevision: etag,
         // In demo mode, hide server-side plugins from the client.
         plugins: config2.demoMode ? [] : getDiscoveredPlugins(),
         virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion2()),
@@ -34198,7 +34338,7 @@ var require_bootstrap = __commonJS({
       } catch (e) {
         console.warn("[bootstrap] precompression failed:", e.message);
       }
-      const entry = { response, dirMtimes, compressed };
+      const entry = { response, dirMtimes, compressed, etag };
       cache.set(vaultId, entry);
       const ms = Date.now() - t0;
       const fileCount = Object.keys(tree).filter(
@@ -34277,6 +34417,7 @@ var require_bootstrap = __commonJS({
     module2.exports.invalidateAll = invalidateAll;
     module2.exports.warmUp = warmUp;
     module2.exports.walkTree = walkTree;
+    module2.exports.getOrBuild = getOrBuild;
   }
 });
 
@@ -34532,7 +34673,7 @@ var require_demo_cleanup = __commonJS({
           continue;
         }
         try {
-          watcher2.stopWatching(storageName);
+          await watcher2.stopWatching(storageName);
         } catch {
         }
         try {
@@ -61036,7 +61177,7 @@ var require_fs = __commonJS({
     var {
       writeCoalescer: writeCoalescer2,
       encodeContentDispositionFilename,
-      resolveVaultPath,
+      resolveVaultPath: resolveVaultPath2,
       sanitizeError
     } = require_src2();
     var {
@@ -61074,7 +61215,7 @@ var require_fs = __commonJS({
         res.status(400).json({ error: "Missing path parameter" });
         return null;
       }
-      const resolved = resolveVaultPath(vaultRoot, p);
+      const resolved = resolveVaultPath2(vaultRoot, p);
       if (!resolved) {
         res.status(403).json({ error: "Path traversal rejected" });
         return null;
@@ -61107,29 +61248,6 @@ var require_fs = __commonJS({
           mtime: stat.mtimeMs,
           ctime: stat.ctimeMs
         });
-      } catch (e) {
-        res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));
-      }
-    });
-    router.get("/readdir", async (req, res) => {
-      const resolved = guardPath(req, res);
-      if (!resolved) {
-        return;
-      }
-      try {
-        const stat = await fs2.promises.stat(resolved);
-        if (!stat.isDirectory()) {
-          return res.status(400).json({ error: "ENOTDIR: not a directory", code: "ENOTDIR" });
-        }
-        const entries = await fs2.promises.readdir(resolved, {
-          withFileTypes: true
-        });
-        res.json(
-          entries.map((e) => ({
-            name: e.name,
-            type: e.isDirectory() ? "directory" : "file"
-          }))
-        );
       } catch (e) {
         res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));
       }
@@ -61227,8 +61345,8 @@ var require_fs = __commonJS({
       if (!req.body?.oldPath || !req.body?.newPath) {
         return res.status(400).json({ error: "Missing oldPath or newPath" });
       }
-      const oldResolved = resolveVaultPath(vaultRoot, req.body.oldPath);
-      const newResolved = resolveVaultPath(vaultRoot, req.body.newPath);
+      const oldResolved = resolveVaultPath2(vaultRoot, req.body.oldPath);
+      const newResolved = resolveVaultPath2(vaultRoot, req.body.newPath);
       if (!oldResolved || !newResolved) {
         return res.status(403).json({ error: "Invalid path" });
       }
@@ -61250,8 +61368,8 @@ var require_fs = __commonJS({
       if (!req.body?.src || !req.body?.dest) {
         return res.status(400).json({ error: "Missing src or dest" });
       }
-      const srcResolved = resolveVaultPath(vaultRoot, req.body.src);
-      const destResolved = resolveVaultPath(vaultRoot, req.body.dest);
+      const srcResolved = resolveVaultPath2(vaultRoot, req.body.src);
+      const destResolved = resolveVaultPath2(vaultRoot, req.body.dest);
       if (!srcResolved || !destResolved) {
         return res.status(403).json({ error: "Invalid path" });
       }
@@ -61361,7 +61479,7 @@ var require_fs = __commonJS({
       const files = {};
       await Promise.all(
         paths.map(async (relPath) => {
-          const resolved = resolveVaultPath(vaultRoot, relPath);
+          const resolved = resolveVaultPath2(vaultRoot, relPath);
           if (!resolved) {
             return;
           }
@@ -61388,48 +61506,20 @@ var require_fs = __commonJS({
       if (!vaultRoot) {
         return;
       }
-      const rootPath = req.query.path ? resolveVaultPath(vaultRoot, req.query.path) : vaultRoot;
-      if (!rootPath) {
-        return res.status(403).json({ error: "Invalid path" });
-      }
       try {
-        const tree = {};
-        async function walk(dir, prefix) {
-          const entries = await fs2.promises.readdir(dir, {
-            withFileTypes: true
-          });
-          for (const entry of entries) {
-            const rel = prefix ? prefix + "/" + entry.name : entry.name;
-            const full = path2.join(dir, entry.name);
-            if (entry.isDirectory()) {
-              tree[rel] = { type: "directory" };
-              await walk(full, rel);
-            } else {
-              const buffered = getPending(full);
-              if (buffered) {
-                const stat = await fs2.promises.stat(full).catch(() => null);
-                const size = Buffer.isBuffer(buffered.data) ? buffered.data.length : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
-                tree[rel] = {
-                  type: "file",
-                  size,
-                  mtime: Date.now(),
-                  ctime: stat ? stat.ctimeMs : Date.now()
-                };
-              } else {
-                const stat = await fs2.promises.stat(full);
-                tree[rel] = {
-                  type: "file",
-                  size: stat.size,
-                  mtime: stat.mtimeMs,
-                  ctime: stat.ctimeMs
-                };
-              }
-            }
-          }
+        const entry = await bootstrapRoutes2.getOrBuild(req._vaultId);
+        if (!entry) {
+          return res.status(404).json({ error: "Vault not found" });
         }
-        await walk(rootPath, "");
         res.setHeader("Cache-Control", "no-store");
-        res.json(tree);
+        res.setHeader("ETag", entry.etag);
+        if (req.headers["if-none-match"] === entry.etag) {
+          return res.status(304).end();
+        }
+        if (req._demoSessionId) {
+          return res.json(JSON.parse(JSON.stringify(entry.response.tree)));
+        }
+        res.json(entry.response.tree);
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61500,6 +61590,43 @@ var require_fs = __commonJS({
   }
 });
 
+// apps/ignis-server/server/vault-lifecycle.js
+var require_vault_lifecycle = __commonJS({
+  "apps/ignis-server/server/vault-lifecycle.js"(exports2, module2) {
+    var config2 = require_config();
+    var { watcher: watcher2 } = require_src2();
+    var wss2 = null;
+    function setWss(w) {
+      wss2 = w;
+    }
+    async function withWatcherStopped(vaultId, vaultPath, mutate) {
+      const stopping = watcher2.stopWatching(vaultId);
+      const wasWatching = stopping !== void 0;
+      await stopping;
+      try {
+        return await mutate();
+      } catch (e) {
+        config2.refreshVaults();
+        if (wasWatching) {
+          try {
+            watcher2.startWatching(vaultId, vaultPath);
+          } catch (err) {
+            console.error(
+              `[vault] Watcher restore failed for "${vaultId}":`,
+              err.message
+            );
+          }
+          if (wss2) {
+            wss2.closeVaultSockets(vaultId);
+          }
+        }
+        throw e;
+      }
+    }
+    module2.exports = { setWss, withWatcherStopped };
+  }
+});
+
 // apps/ignis-server/server/routes/vault.js
 var require_vault = __commonJS({
   "apps/ignis-server/server/routes/vault.js"(exports2, module2) {
@@ -61508,6 +61635,7 @@ var require_vault = __commonJS({
     var config2 = require_config();
     var path2 = require("path");
     var bootstrapRoutes2 = require_bootstrap();
+    var { withWatcherStopped } = require_vault_lifecycle();
     var { sanitizeError } = require_src2();
     var router = express2.Router();
     var WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
@@ -61577,16 +61705,23 @@ var require_vault = __commonJS({
       if (!vaultPath) {
         return res.status(404).json({ error: "Vault not found" });
       }
+      if (newName !== vaultId && Object.prototype.hasOwnProperty.call(config2.vaults, newName)) {
+        return res.status(409).json({ error: `A vault with name: ${newName} already exists` });
+      }
       const newPath = path2.join(config2.vaultRoot, newName);
       try {
-        await fs2.promises.rename(vaultPath, newPath);
+        await withWatcherStopped(
+          vaultId,
+          vaultPath,
+          () => fs2.promises.rename(vaultPath, newPath)
+        );
         config2.refreshVaults();
         bootstrapRoutes2.invalidateVault(vaultId);
         bootstrapRoutes2.invalidateVault(newName);
         res.json({ ok: true, id: newName, path: newPath });
       } catch (e) {
         if (e.code === "ENOTEMPTY" || e.code === "EEXIST") {
-          return res.status(409).json({ error: "A vault with that name already exists" });
+          return res.status(409).json({ error: `A vault with name: ${newName} already exists` });
         }
         res.status(500).json(sanitizeError(e));
       }
@@ -61598,7 +61733,11 @@ var require_vault = __commonJS({
         return res.status(404).json({ error: "Vault not found" });
       }
       try {
-        await fs2.promises.rm(vaultPath, { recursive: true });
+        await withWatcherStopped(
+          vaultId,
+          vaultPath,
+          () => fs2.promises.rm(vaultPath, { recursive: true, force: true })
+        );
         config2.refreshVaults();
         bootstrapRoutes2.invalidateVault(vaultId);
         res.json({ ok: true });
@@ -62061,6 +62200,11 @@ var require_settings2 = __commonJS({
             `maxBodyBytes must be between 1 and ${settings2.MAX_BODY_BACKSTOP}`
           );
         }
+        if (key === "writeCoalesceMs" && n > settings2.MAX_WRITE_COALESCE_MS) {
+          throw new Error(
+            `writeCoalesceMs must be between 0 and ${settings2.MAX_WRITE_COALESCE_MS}`
+          );
+        }
         clean[key] = n;
       }
       for (const key of LIST_KEYS) {
@@ -62110,7 +62254,8 @@ var { versionedSrc, cacheControlFor } = require_cache_headers();
 var {
   setupWebSocket,
   watcher,
-  writeCoalescer
+  writeCoalescer,
+  resolveVaultPath
 } = require_src2();
 var {
   BRIDGE_PLUGIN_ID,
@@ -62162,6 +62307,7 @@ var proxyRoutes = require_proxy();
 var versionRoutes = require_version2();
 var settingsRoutes = require_settings2();
 var bootstrapRoutes = require_bootstrap();
+var vaultLifecycle = require_vault_lifecycle();
 app.use("/assets", express.static(path.join(__dirname, "assets")));
 setupDemo(app);
 app.use("/api/fs", fsRoutes);
@@ -62266,6 +62412,21 @@ app.use("/vault-files", (req, res, next) => {
   if (!vaultPath) {
     return res.status(404).json({ error: "Vault not found" });
   }
+  let resolved = null;
+  try {
+    const relPath = parts.slice(1).map(decodeURIComponent).join("/");
+    resolved = relPath ? resolveVaultPath(vaultPath, relPath) : null;
+  } catch {
+  }
+  const buffered = resolved ? writeCoalescer.getPending(resolved) : null;
+  if (buffered) {
+    const body = Buffer.isBuffer(buffered.data) ? buffered.data : Buffer.from(buffered.data, buffered.encoding || "utf-8");
+    const ext = path.extname(resolved);
+    if (ext) {
+      res.type(ext);
+    }
+    return res.send(body);
+  }
   req.url = "/" + parts.slice(1).join("/");
   express.static(vaultPath)(req, res, next);
 });
@@ -62289,7 +62450,10 @@ function buildIndexHtml() {
   let html = fs.readFileSync(templatePath, "utf-8");
   html = html.replace("__IGNIS_UI_SRC__", `ignis-ui.js?v=${version}`);
   html = html.replace("__SHIM_LOADER_SRC__", `shim-loader.js?v=${version}`);
-  html = html.replace("__APP_CSS_SRC__", versionedSrc("app.css", obsidianVersion));
+  html = html.replace(
+    "__APP_CSS_SRC__",
+    versionedSrc("app.css", obsidianVersion)
+  );
   html = html.replace(
     "__OBSIDIAN_SCRIPTS__",
     JSON.stringify(scripts.map((s) => versionedSrc(s, obsidianVersion)))
@@ -62340,7 +62504,29 @@ var wss = setupWebSocket(server, {
   getVaultPath: config.getVaultPath,
   originAllowlist: settings.get("wsOrigins")
 });
+vaultLifecycle.setWss(wss);
 wireDemoWebSocket(server);
+watcher.addGlobalListener(
+  (vaultId) => bootstrapRoutes.invalidateVault(vaultId)
+);
+function vaultForPath(absPath) {
+  const target = path.resolve(absPath);
+  for (const [vaultId, vaultPath] of Object.entries(config.vaults)) {
+    const base = path.resolve(vaultPath);
+    if (target === base || target.startsWith(base + path.sep)) {
+      return { vaultId, base };
+    }
+  }
+  return null;
+}
+writeCoalescer.onFlushGiveUp((absPath) => {
+  const match = vaultForPath(absPath);
+  if (!match) {
+    return;
+  }
+  const rel = path.relative(match.base, absPath).split(path.sep).join("/");
+  wss.broadcastToVault(match.vaultId, { type: "write-giveup", path: rel });
+});
 async function gracefulShutdown(signal) {
   console.log(`
 [ignis] Received ${signal}, shutting down gracefully...`);
