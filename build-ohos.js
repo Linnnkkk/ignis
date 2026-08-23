@@ -27,9 +27,18 @@ execSync(
 );
 
 // 2. 运行时伴随文件（__dirname 相对读取的）
-fs.copyFileSync(
-  path.join(ROOT, "apps/ignis-server/server/build-info.json"),
+// build-info.json 不复制仓库里的过期产物——以根 package.json 版本为准现场生成
+// （上游这份文件只有发版 CI 会刷新，仓库内长期滞后）
+const SEMVER = JSON.parse(
+  fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
+).version;
+fs.writeFileSync(
   path.join(SERVER_DIR, "build-info.json"),
+  JSON.stringify(
+    { semver: SEMVER, build: "vitreus", version: SEMVER + "+vitreus" },
+    null,
+    2,
+  ) + "\n",
 );
 fs.copyFileSync(
   path.join(ROOT, "apps/ignis-server/server/demo/demo-capacity.html"),
@@ -63,6 +72,18 @@ fs.cpSync(
   path.join(OUT, "packages/shim/dist"),
   { recursive: true },
 );
+// shim dist 同样是上游 CI 才重编的旧产物：window.__ignis.version 烤死在构建时。
+// 页面关于栏显示的就是它——打包时自动对齐到根 package.json 版本，一劳永逸。
+{
+  const shimOut = path.join(OUT, "packages/shim/dist/shim-loader.js");
+  let s = fs.readFileSync(shimOut, "utf-8");
+  const m = s.match(/window\.__ignis = \{ version: "([^"]+)", build: "[^"]+" \}/);
+  if (m && m[1] !== SEMVER) {
+    s = s.split('version: "' + m[1] + '"').join('version: "' + SEMVER + '"');
+    fs.writeFileSync(shimOut, s);
+    console.log("shim 版本串已对齐: " + m[1] + " -> " + SEMVER);
+  }
+}
 fs.mkdirSync(path.join(OUT, "images"), { recursive: true });
 fs.copyFileSync(
   path.join(ROOT, "images/favicon.png"),
