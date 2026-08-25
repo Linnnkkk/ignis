@@ -212,6 +212,12 @@ function stopWatching(vaultId) {
   });
 }
 
+function isWatching(vaultId) {
+  const entry = vaultWatchers.get(vaultId);
+
+  return !!entry && entry.ready;
+}
+
 function addGlobalListener(fn) {
   globalListeners.add(fn);
 }
@@ -280,6 +286,7 @@ function _reset() {
 module.exports = {
   startWatching,
   stopWatching,
+  isWatching,
   addListener,
   removeListener,
   addGlobalListener,

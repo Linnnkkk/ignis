@@ -267,6 +267,26 @@ describe("watcher start hook", () => {
   });
 });
 
+describe("isWatching", () => {
+  it("turns true at ready and false again once the watcher stops", async () => {
+    await makeVaultDir(1);
+
+    expect(watcher.isWatching(VAULT_ID)).toBe(false);
+
+    const entry = watcher.startWatching(VAULT_ID, tmpDir);
+
+    expect(watcher.isWatching(VAULT_ID)).toBe(false);
+
+    await whenReady(entry);
+
+    expect(watcher.isWatching(VAULT_ID)).toBe(true);
+
+    await watcher.stopWatching(VAULT_ID);
+
+    expect(watcher.isWatching(VAULT_ID)).toBe(false);
+  });
+});
+
 describe("watcher liveness rebuild", () => {
   it("replaces a ready watcher that tracks no paths", async () => {
     const vaultPath = await makeNestedVaultDir();

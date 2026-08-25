@@ -5,7 +5,7 @@
 const express = require("express");
 const config = require("../config");
 const { sanitizeError } = require("@ignis/server-core");
-const { getOrBuild } = require("../bootstrap-cache");
+const { getOrBuild, getOrCompress } = require("../bootstrap-cache");
 
 const router = express.Router();
 
@@ -34,7 +34,7 @@ router.get("/", async (req, res) => {
     }
 
     const ae = req.headers["accept-encoding"] || "";
-    const { compressed } = entry;
+    const compressed = await getOrCompress(entry);
     let buf, encoding;
 
     if (ae.includes("br") && compressed.br) {

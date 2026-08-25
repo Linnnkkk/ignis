@@ -259,8 +259,16 @@ wireDemoWebSocket(server);
 // Invalidate stored tree on any file change.
 watcher.addGlobalListener((vaultId) => bootstrapCache.invalidateVault(vaultId));
 
+watcher.onWatcherStart((vaultId) =>
+  bootstrapCache.markForRevalidation(vaultId),
+);
+
 // Per-client listeners die along with their watcher.
-watcher.onWatcherRebuild((vaultId) => wss.closeVaultSockets(vaultId));
+watcher.onWatcherRebuild((vaultId) => {
+  // force revalidation to ensure any missed changes are picked up
+  bootstrapCache.invalidateVault(vaultId);
+  wss.closeVaultSockets(vaultId);
+});
 
 function vaultForPath(absPath) {
   const target = path.resolve(absPath);
