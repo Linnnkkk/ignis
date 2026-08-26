@@ -6,6 +6,7 @@ const {
   invalidateAll,
   markForRevalidation,
 } = require("./invalidate");
+const { onEntrySwapped, onVaultInvalidated } = require("./state");
 
 module.exports = {
   walkTree,
@@ -15,5 +16,7 @@ module.exports = {
   invalidateVault,
   invalidateAll,
   markForRevalidation,
+  onEntrySwapped,
+  onVaultInvalidated,
   warmUp,
 };

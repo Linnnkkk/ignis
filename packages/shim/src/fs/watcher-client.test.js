@@ -24,7 +24,12 @@ function makeDeps(metadataOverride) {
   };
 
   const fsWatch = { _dispatch: vi.fn() };
-  const wsClient = { subscribe: vi.fn(), onOpen: vi.fn() };
+  const metadataChannel = { subscribe: vi.fn(), send: vi.fn() };
+  const wsClient = {
+    subscribe: vi.fn(),
+    onOpen: vi.fn(),
+    channel: vi.fn(() => metadataChannel),
+  };
   const transport = { fetchTree: vi.fn() };
 
   const client = createWatcherClient(
@@ -40,6 +45,7 @@ function makeDeps(metadataOverride) {
     metadataCache,
     contentCache,
     fsWatch,
+    metadataChannel,
     wsClient,
     transport,
     client,
@@ -167,6 +173,101 @@ describe("watcher-client resync", () => {
     await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
 
     expect(d.transport.fetchTree).toHaveBeenLastCalledWith('"2"');
+  });
+});
+
+describe("watcher-client revision channel", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const handlerOf = (d, type) =>
+    d.metadataChannel.subscribe.mock.calls.find((c) => c[0] === type)[1];
+
+  function atRevision(rev) {
+    const d = makeDeps();
+
+    d.transport.fetchTree.mockResolvedValue({ notModified: true, etag: rev });
+    d.client.setTreeRevision(rev);
+
+    return d;
+  }
+
+  it("subscribes to the metadata channel for both announcements", () => {
+    const d = makeDeps();
+
+    const types = d.metadataChannel.subscribe.mock.calls.map((c) => c[0]);
+
+    expect(d.wsClient.channel).toHaveBeenCalledWith("metadata");
+    expect(types).toContain("revision");
+    expect(types).toContain("replaced");
+  });
+
+  it("adopts an announced revision as the one it revalidates against", async () => {
+    const d = atRevision('"a-1"');
+
+    handlerOf(d, "revision")({ revision: '"a-2"' });
+    d.wsClient.onOpen.mock.calls[0][0]();
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).toHaveBeenCalledWith('"a-2"');
+  });
+
+  it("adopts an announced revision that sits below the one it holds", async () => {
+    const d = atRevision('"a-9"');
+
+    handlerOf(d, "revision")({ revision: '"a-4"' });
+    d.wsClient.onOpen.mock.calls[0][0]();
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).toHaveBeenCalledWith('"a-4"');
+  });
+
+  it("fetches nothing on an announcement", async () => {
+    const d = atRevision('"a-1"');
+
+    handlerOf(d, "revision")({ revision: '"a-2"' });
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).not.toHaveBeenCalled();
+  });
+
+  it("holds its revision when the announcement repeats it", async () => {
+    const d = atRevision('"a-1"');
+
+    handlerOf(d, "revision")({ revision: '"a-1"' });
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).not.toHaveBeenCalled();
+
+    d.wsClient.onOpen.mock.calls[0][0]();
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).toHaveBeenCalledWith('"a-1"');
+  });
+
+  it("resyncs on a replacement even at the revision it holds", async () => {
+    const d = atRevision('"a-1"');
+
+    handlerOf(d, "replaced")({ revision: '"a-1"' });
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).toHaveBeenCalledWith('"a-1"');
+  });
+
+  it("coalesces an announcement into the resync a socket open scheduled", async () => {
+    const d = atRevision('"a-1"');
+
+    d.wsClient.onOpen.mock.calls[0][0]();
+    handlerOf(d, "replaced")({ revision: '"a-2"' });
+    await vi.advanceTimersByTimeAsync(RESYNC_DEBOUNCE_MS);
+
+    expect(d.transport.fetchTree).toHaveBeenCalledTimes(1);
+    expect(d.transport.fetchTree).toHaveBeenCalledWith('"a-1"');
   });
 });
 

@@ -22,12 +22,46 @@ const compressedEtags = new WeakMap();
 // entry -> ongoing recompression.
 const compressing = new WeakMap();
 
+// Set<fn(vaultId, revision)>, fires when a crawl entry is stored.
+const swapListeners = new Set();
+
+// Set<fn(vaultId)>, fires when a vault's entry is dropped.
+const invalidateListeners = new Set();
+
 // keeps /tree ETags unique across restarts.
 const bootNonce = require("crypto").randomBytes(6).toString("hex");
 let revisionCounter = 0;
 
 function nextEtag() {
   return '"' + bootNonce + "-" + ++revisionCounter + '"';
+}
+
+function notifyEntrySwapped(vaultId, revision) {
+  for (const fn of swapListeners) {
+    try {
+      fn(vaultId, revision);
+    } catch (e) {
+      console.error("[bootstrap] swap listener error:", e.message);
+    }
+  }
+}
+
+function notifyVaultInvalidated(vaultId) {
+  for (const fn of invalidateListeners) {
+    try {
+      fn(vaultId);
+    } catch (e) {
+      console.error("[bootstrap] invalidate listener error:", e.message);
+    }
+  }
+}
+
+function onEntrySwapped(fn) {
+  swapListeners.add(fn);
+}
+
+function onVaultInvalidated(fn) {
+  invalidateListeners.add(fn);
 }
 
 module.exports = {
@@ -40,4 +74,8 @@ module.exports = {
   compressedEtags,
   compressing,
   nextEtag,
+  notifyEntrySwapped,
+  notifyVaultInvalidated,
+  onEntrySwapped,
+  onVaultInvalidated,
 };

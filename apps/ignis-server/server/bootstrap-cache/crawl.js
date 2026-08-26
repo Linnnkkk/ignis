@@ -16,6 +16,7 @@ const {
   crawlTokens,
   revalidateOnce,
   nextEtag,
+  notifyEntrySwapped,
 } = require("./state");
 const { absOf, fileNode } = require("./tree-ops");
 const { getOrCompress, markCompressionStale } = require("./compress");
@@ -226,6 +227,7 @@ async function swapEntry(vaultId, vaultPath, entry, buffer, token) {
   closeReplayBuffer(vaultId, buffer);
   crawlTokens.delete(vaultId);
   cache.set(vaultId, entry);
+  notifyEntrySwapped(vaultId, entry.etag);
 }
 
 async function getOrBuild(vaultId) {

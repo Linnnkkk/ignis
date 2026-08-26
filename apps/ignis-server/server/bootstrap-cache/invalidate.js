@@ -4,6 +4,7 @@ const {
   revalidateOnce,
   applyQueues,
   replayBuffers,
+  notifyVaultInvalidated,
 } = require("./state");
 
 function cancelQueue(vaultId) {
@@ -20,9 +21,13 @@ function invalidateVault(vaultId) {
   crawlTokens.delete(vaultId); // stops a running crawl's entry from being stored.
   cancelQueue(vaultId);
   replayBuffers.delete(vaultId);
+
+  notifyVaultInvalidated(vaultId);
 }
 
 function invalidateAll() {
+  const cached = Array.from(cache.keys());
+
   cache.clear();
   revalidateOnce.clear();
   crawlTokens.clear();
@@ -30,6 +35,10 @@ function invalidateAll() {
 
   for (const vaultId of applyQueues.keys()) {
     cancelQueue(vaultId);
+  }
+
+  for (const vaultId of cached) {
+    notifyVaultInvalidated(vaultId);
   }
 }
 

@@ -5,6 +5,7 @@ import { isRecentLocalOp } from "./echo-guard.js";
 import { normalize } from "../util/path.js";
 
 const RESYNC_DEBOUNCE_MS = 1000;
+const METADATA_CHANNEL = "metadata";
 
 export function createWatcherClient(
   metadataCache,
@@ -158,6 +159,16 @@ export function createWatcherClient(
   }
 
   wsClient.onOpen(scheduleResync);
+
+  const metadataChannel = wsClient.channel(METADATA_CHANNEL);
+
+  metadataChannel.subscribe("revision", (msg) => {
+    treeRevision = msg.revision;
+  });
+
+  metadataChannel.subscribe("replaced", () => {
+    scheduleResync();
+  });
 
   function connect(vaultId) {
     wsClient.connect(vaultId);
