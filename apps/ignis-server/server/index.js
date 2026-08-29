@@ -313,6 +313,9 @@ const wss = setupWebSocket(server, {
   originAllowlist: settings.get("wsOrigins"),
 });
 vaultLifecycle.setWss(wss);
+
+// 伺服器模式：动态 serverB（0.0.0.0 + Digest）管理 API（仅回环，ArkTS 壳层调用）
+require("./lan-share").setupLanShare(app, wss);
 wireDemoWebSocket(server);
 
 const metadataChannel = createMetadataChannel(wss);
