@@ -4,70 +4,94 @@ const CHANNEL = "metadata";
 
 const REVISION_DEBOUNCE_MS = 250;
 
+const REVISION_MAX_WAIT_MS = 2000;
+
 function createMetadataChannel(wss) {
   const channel = wss.channel(CHANNEL);
 
-  // vaultId -> { revision: announced or pending, timer }
+  // vaultId -> { etag, timer, debounceStart }
   const state = new Map();
 
   function stateOf(vaultId) {
-    let entry = state.get(vaultId);
+    let announceState = state.get(vaultId);
 
-    if (!entry) {
-      entry = { revision: null, timer: null };
-      state.set(vaultId, entry);
+    if (!announceState) {
+      announceState = { etag: null, timer: null, debounceStart: 0 };
+      state.set(vaultId, announceState);
     }
 
-    return entry;
+    return announceState;
   }
 
-  function noteRevision(vaultId, revision) {
-    if (!revision) {
+  function announce(vaultId, announceState) {
+    clearTimeout(announceState.timer);
+    announceState.timer = null;
+    announceState.debounceStart = 0;
+
+    channel.broadcastToVault(vaultId, {
+      type: "revision",
+      etag: announceState.etag,
+    });
+  }
+
+  function reportRevision(vaultId, etag) {
+    if (!etag) {
       return;
     }
 
-    const entry = stateOf(vaultId);
+    const announceState = state.get(vaultId);
 
-    if (entry.revision === revision) {
+    if (!announceState || announceState.etag === etag) {
       return;
     }
 
-    entry.revision = revision;
-    clearTimeout(entry.timer);
+    announceState.etag = etag;
 
-    entry.timer = setTimeout(() => {
-      entry.timer = null;
-      channel.broadcastToVault(vaultId, {
-        type: "revision",
-        revision: entry.revision,
-      });
-    }, REVISION_DEBOUNCE_MS);
+    if (
+      announceState.timer &&
+      Date.now() - announceState.debounceStart >= REVISION_MAX_WAIT_MS
+    ) {
+      announce(vaultId, announceState);
 
-    entry.timer.unref?.();
+      return;
+    }
+
+    if (!announceState.timer) {
+      announceState.debounceStart = Date.now();
+    }
+
+    clearTimeout(announceState.timer);
+    announceState.timer = setTimeout(
+      () => announce(vaultId, announceState),
+      REVISION_DEBOUNCE_MS,
+    );
+
+    announceState.timer.unref?.();
   }
 
-  function noteReplaced(vaultId, revision) {
-    const entry = stateOf(vaultId);
+  function reportReplacement(vaultId, etag) {
+    const announceState = stateOf(vaultId);
 
-    clearTimeout(entry.timer);
-    entry.timer = null;
-    entry.revision = revision;
+    clearTimeout(announceState.timer);
+    announceState.timer = null;
+    announceState.debounceStart = 0;
+    announceState.etag = etag;
 
-    channel.broadcastToVault(vaultId, { type: "replaced", revision });
+    channel.broadcastToVault(vaultId, { type: "replaced", etag });
   }
 
   function forgetVault(vaultId) {
-    const entry = state.get(vaultId);
+    const announceState = state.get(vaultId);
 
-    if (!entry) {
+    if (!announceState) {
       return;
     }
 
-    clearTimeout(entry.timer);
+    clearTimeout(announceState.timer);
     state.delete(vaultId);
   }
 
-  return { noteRevision, noteReplaced, forgetVault };
+  return { reportRevision, reportReplacement, forgetVault };
 }
 
 module.exports = { createMetadataChannel };

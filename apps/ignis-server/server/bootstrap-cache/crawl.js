@@ -147,7 +147,7 @@ async function buildEntry(vaultId) {
       vault,
       vaultList: buildVaultList(),
       tree,
-      treeRevision: etag,
+      etag,
       // In demo mode, hide server-side plugins from the client.
       plugins: config.demoMode ? [] : getDiscoveredPlugins(),
       virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),

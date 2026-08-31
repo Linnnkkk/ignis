@@ -207,7 +207,7 @@ describe("revision", () => {
     ]);
 
     expect(etag).toBe(entry.etag);
-    expect(entry.response.treeRevision).toBe(entry.etag);
+    expect(entry.response.etag).toBe(entry.etag);
     expect(revisionOf(entry.etag)).toBe(before + 1);
   });
 
@@ -315,7 +315,7 @@ describe("crawls in flight", () => {
     expect(first.response.tree["late.md"]).toMatchObject({ type: "file" });
     expect(second.response.tree["late.md"]).toMatchObject({ type: "file" });
     expect(second.response.tree["direct.md"]).toMatchObject({ type: "file" });
-    expect(second.response.treeRevision).toBe(second.etag);
+    expect(second.response.etag).toBe(second.etag);
     expect(await build()).toBe(second);
   });
 
@@ -421,7 +421,7 @@ describe("compression", () => {
     const body = JSON.parse(zlib.brotliDecompressSync(compressed.br));
 
     expect(body.tree["b.md"]).toMatchObject({ type: "file" });
-    expect(body.treeRevision).toBe(entry.etag);
+    expect(body.etag).toBe(entry.etag);
   });
 
   it("compresses once for concurrent requests", async () => {
@@ -472,7 +472,7 @@ describe("compression", () => {
 
     const body = JSON.parse(zlib.brotliDecompressSync(lateBodies.br));
 
-    expect(body.treeRevision).toBe(entry.etag);
+    expect(body.etag).toBe(entry.etag);
     expect(body.tree["c.md"]).toMatchObject({ type: "file" });
     expect(entry.compressed).toBe(lateBodies);
   });

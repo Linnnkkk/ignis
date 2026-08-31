@@ -84,6 +84,7 @@ const settingsRoutes = require("./routes/settings");
 const bootstrapRoutes = require("./routes/bootstrap");
 const bootstrapCache = require("./bootstrap-cache");
 const { createMetadataChannel } = require("./metadata-channel");
+const { registerCacheListeners } = require("./cache-listeners");
 const vaultLifecycle = require("./vault-lifecycle");
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
@@ -259,16 +260,7 @@ wireDemoWebSocket(server);
 
 const metadataChannel = createMetadataChannel(wss);
 
-bootstrapCache.onEntrySwapped((vaultId, revision) =>
-  metadataChannel.noteReplaced(vaultId, revision),
-);
-
-bootstrapCache.onVaultInvalidated((vaultId) =>
-  metadataChannel.forgetVault(vaultId),
-);
-
-// Invalidate stored tree on any file change.
-watcher.addGlobalListener((vaultId) => bootstrapCache.invalidateVault(vaultId));
+registerCacheListeners({ bootstrapCache, metadataChannel, watcher });
 
 watcher.onWatcherStart((vaultId) =>
   bootstrapCache.markForRevalidation(vaultId),

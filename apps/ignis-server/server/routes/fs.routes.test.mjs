@@ -6,6 +6,7 @@ import {
   beforeAll,
   afterAll,
   beforeEach,
+  afterEach,
 } from "vitest";
 import { createRequire } from "module";
 import path from "path";
@@ -25,7 +26,7 @@ const config = require("../config");
 config.refreshVaults();
 const fsRouter = require("./fs");
 const bootstrapCache = require("../bootstrap-cache");
-const { writeCoalescer } = require("@ignis/server-core");
+const { writeCoalescer, watcher } = require("@ignis/server-core");
 const express = require("express");
 
 // Window must exceed two sequential localhost round-trips so the second write to a path buffers.
@@ -85,6 +86,8 @@ const copyFile = (src, dest) => postJson("copyFile", { src, dest });
 const appendFile = (p, content) => postJson("appendFile", { path: p, content });
 const unlink = (p) => fetch(u(`unlink?${q(p)}`), { method: "DELETE" });
 const rmdir = (p) => fetch(u(`rmdir?${q(p)}`), { method: "DELETE" });
+const rmRecursive = (p) =>
+  fetch(u(`rm?${q(p)}&recursive=true`), { method: "DELETE" });
 
 // Seed a buffered write: first write hits disk, second is held in the coalescer buffer.
 async function bufferWrite(p, first, second) {
@@ -265,6 +268,205 @@ describe("tree route conditional fetch via ETag", () => {
     expect(second.status).toBe(200);
     expect(tree["added.md"]).toMatchObject({ type: "file" });
     expect(newEtag).not.toBe(oldEtag);
+  });
+});
+
+describe("mutation routes apply to a watched vault's tree", () => {
+  const treeRes = (headers) =>
+    fetch(u(`tree?vault=${VAULT_ID}`), headers ? { headers } : undefined);
+  const tree = async () => (await treeRes()).json();
+
+  const settle = async () => {
+    await sleep(30);
+    await bootstrapCache.applyMutation(VAULT_ID, []); // wait for queue
+  };
+
+  let logs;
+
+  function captureLogs() {
+    logs = [];
+
+    return vi.spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+  }
+
+  const crawlLines = () => logs.filter((l) => l.includes("build files="));
+
+  beforeEach(() => {
+    bootstrapCache.invalidateAll();
+    vi.spyOn(watcher, "isWatching").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows a written file without crawling the vault", async () => {
+    await tree();
+
+    const spy = captureLogs();
+
+    try {
+      await writeFile("applied.md", "hello");
+      await settle();
+
+      expect((await tree())["applied.md"]).toMatchObject({
+        type: "file",
+        size: 5,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(crawlLines()).toEqual([]);
+  });
+
+  it("skips a write to a path no watcher reports on", async () => {
+    const before = await treeRes();
+    await before.json();
+
+    const spy = captureLogs();
+    let after;
+
+    try {
+      expect((await writeFile(".git/index", "gitdata")).ok).toBe(true);
+      await settle();
+
+      after = await treeRes();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(exists(".git/index")).toBe(true);
+    expect((await after.json())[".git/index"]).toBeUndefined();
+    expect(after.headers.get("etag")).toBe(before.headers.get("etag"));
+    expect(crawlLines()).toEqual([]);
+  });
+
+  it("materializes the directories a deep write passes through", async () => {
+    await tree();
+
+    const spy = captureLogs();
+    let current;
+
+    try {
+      await writeFile("a/b/c.md", "c");
+      await settle();
+
+      current = await tree();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(current["a"]).toEqual({ type: "directory" });
+    expect(current["a/b"]).toEqual({ type: "directory" });
+    expect(current["a/b/c.md"]).toMatchObject({ type: "file" });
+    expect(crawlLines()).toEqual([]);
+  });
+
+  it("advances the ETag once per mutation and holds it in between", async () => {
+    const first = await treeRes();
+    await first.json();
+
+    const spy = captureLogs();
+    let second, third, repeat;
+
+    try {
+      await writeFile("etag-a.md", "a");
+      await settle();
+
+      second = await treeRes();
+      await second.json();
+
+      await unlink("etag-a.md");
+      await settle();
+
+      third = await treeRes();
+      await third.json();
+
+      repeat = await treeRes({ "If-None-Match": third.headers.get("etag") });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const etags = [first, second, third].map((r) => r.headers.get("etag"));
+
+    expect(new Set(etags).size).toBe(3);
+    expect(repeat.status).toBe(304);
+    expect(crawlLines()).toEqual([]);
+  });
+
+  it("records the size a pending write reports, not the size on disk", async () => {
+    await tree();
+
+    const spy = captureLogs();
+    let node;
+
+    try {
+      await bufferWrite("x.md", "v1", "v2buffered");
+      await settle();
+
+      node = (await tree())["x.md"];
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(node.size).toBe(Buffer.byteLength("v2buffered"));
+    expect(fs.statSync(abs("x.md")).size).toBe(Buffer.byteLength("v1"));
+    expect(crawlLines()).toEqual([]);
+  });
+
+  it("moves a renamed subtree", async () => {
+    await tree();
+    await writeFile("src/deep/note.md", "note");
+    await settle();
+
+    const spy = captureLogs();
+    let current;
+
+    try {
+      expect((await rename("src", "dst")).ok).toBe(true);
+      await settle();
+
+      current = await tree();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(crawlLines()).toEqual([]);
+    expect(current["dst"]).toEqual({ type: "directory" });
+    expect(current["dst/deep"]).toEqual({ type: "directory" });
+    expect(current["dst/deep/note.md"]).toMatchObject({ type: "file" });
+    expect(
+      Object.keys(current).filter((k) => k === "src" || k.startsWith("src/")),
+    ).toEqual([]);
+  });
+
+  it("sweeps a recursively removed directory out of the tree", async () => {
+    await tree();
+    await writeFile("d/one.md", "one");
+    await writeFile("d/sub/two.md", "two");
+    await settle();
+
+    expect((await tree())["d/sub/two.md"]).toMatchObject({ type: "file" });
+
+    const spy = captureLogs();
+    let current;
+
+    try {
+      expect((await rmRecursive("d")).ok).toBe(true);
+      await settle();
+
+      current = await tree();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(crawlLines()).toEqual([]);
+    expect(
+      Object.keys(current).filter((k) => k === "d" || k.startsWith("d/")),
+    ).toEqual([]);
   });
 });
 

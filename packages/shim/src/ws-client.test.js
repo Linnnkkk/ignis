@@ -101,14 +101,14 @@ describe("ws-client channels", () => {
       data: JSON.stringify({
         channel: "metadata",
         type: "revision",
-        revision: '"a-1"',
+        etag: '"a-1"',
       }),
     });
 
     expect(handler).toHaveBeenCalledWith({
       channel: "metadata",
       type: "revision",
-      revision: '"a-1"',
+      etag: '"a-1"',
     });
   });
 });

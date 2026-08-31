@@ -1,7 +1,7 @@
 // Always-on write durability: a failed writeFile is retried with backoff.
 // A non-silent write drives the status-bar dirty signal and fires a failure event on give-up; a silent write retries without surfacing.
 
-import { markLocalOp } from "./echo-guard.js";
+import { markSentOp } from "./echo-guard.js";
 
 // Only a write lagging past this shows as pending.
 const PENDING_AFTER_MS = 1000;
@@ -183,7 +183,7 @@ function attempt(path, gen) {
       return Promise.resolve(null);
     }
 
-    markLocalOp(path);
+    markSentOp(path);
     return transport.writeFile(path, e.data, e.encoding);
   }).then(
     (result) => {

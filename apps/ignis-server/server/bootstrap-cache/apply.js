@@ -153,7 +153,7 @@ async function applyRecord(vaultPath, entry, record) {
 
 function bumpRevision(entry) {
   entry.etag = nextEtag();
-  entry.response.treeRevision = entry.etag;
+  entry.response.etag = entry.etag;
   markCompressionStale(entry);
 }
 

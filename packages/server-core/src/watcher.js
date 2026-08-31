@@ -1,6 +1,12 @@
 const chokidar = require("chokidar");
 const path = require("path");
 
+const IGNORED_PATH = /(^|[/\\])\.git([/\\]|$)/;
+
+function isIgnoredPath(p) {
+  return IGNORED_PATH.test(p);
+}
+
 // Idle window before a watcher with no listeners stops.
 const IDLE_STOP_MS = 10 * 60 * 1000;
 
@@ -81,9 +87,7 @@ function startWatching(vaultId, vaultPath) {
       stabilityThreshold: 300,
       pollInterval: 100,
     },
-    ignored: [
-      /(^|[/\\])\.git([/\\]|$)/, // .git directories
-    ],
+    ignored: [IGNORED_PATH],
   });
 
   const entry = {
@@ -287,6 +291,7 @@ module.exports = {
   startWatching,
   stopWatching,
   isWatching,
+  isIgnoredPath,
   addListener,
   removeListener,
   addGlobalListener,

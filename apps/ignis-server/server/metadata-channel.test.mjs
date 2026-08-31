@@ -27,9 +27,11 @@ const config = require("./config");
 config.refreshVaults();
 const bootstrapCache = require("./bootstrap-cache");
 const { createMetadataChannel } = require("./metadata-channel");
+const { registerCacheListeners } = require("./cache-listeners");
 const { watcher } = require("@ignis/server-core");
 
 const REVISION_DEBOUNCE_MS = 250;
+const REVISION_MAX_WAIT_MS = 2000;
 
 const seed = (name, content) =>
   fs.writeFileSync(path.join(vaultDir, name), content);
@@ -47,12 +49,17 @@ const wss = {
   }),
 };
 
-bootstrapCache.onEntrySwapped((vaultId, revision) =>
-  metadataChannel.noteReplaced(vaultId, revision),
-);
-bootstrapCache.onVaultInvalidated((vaultId) =>
-  metadataChannel.forgetVault(vaultId),
-);
+const channelRef = {
+  reportRevision: (...args) => metadataChannel.reportRevision(...args),
+  reportReplacement: (...args) => metadataChannel.reportReplacement(...args),
+  forgetVault: (...args) => metadataChannel.forgetVault(...args),
+};
+
+registerCacheListeners({
+  bootstrapCache,
+  metadataChannel: channelRef,
+  watcher,
+});
 
 beforeEach(() => {
   metadataChannel = createMetadataChannel(wss);
@@ -61,6 +68,11 @@ beforeEach(() => {
   fs.mkdirSync(vaultDir, { recursive: true });
   sent = [];
 });
+
+function trackVault(vaultId) {
+  metadataChannel.reportReplacement(vaultId, '"seed"');
+  sent = [];
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -74,10 +86,11 @@ afterAll(() => {
 describe("revision announcements", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    trackVault(VAULT_ID);
   });
 
   it("announces the revision once the applies settle", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
 
     expect(sent).toEqual([]);
 
@@ -88,52 +101,96 @@ describe("revision announcements", () => {
         channel: "metadata",
         vaultId: VAULT_ID,
         type: "revision",
-        revision: '"a-1"',
+        etag: '"a-1"',
       },
     ]);
   });
 
   it("coalesces a burst into the revision it ended on", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
-    metadataChannel.noteRevision(VAULT_ID, '"a-2"');
-    metadataChannel.noteRevision(VAULT_ID, '"a-3"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-2"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-3"');
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     expect(sent).toHaveLength(1);
-    expect(sent[0].revision).toBe('"a-3"');
+    expect(sent[0].etag).toBe('"a-3"');
   });
 
   it("says nothing for a batch that reached no entry", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
-    metadataChannel.noteRevision(VAULT_ID, null);
+    metadataChannel.reportRevision(VAULT_ID, null);
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     expect(sent).toHaveLength(1);
   });
 
   it("does not repeat a revision it already announced", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     expect(sent).toHaveLength(1);
   });
 
   it("keeps vaults apart", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
-    metadataChannel.noteRevision("w", '"a-2"');
+    trackVault("w");
+
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
+    metadataChannel.reportRevision("w", '"a-2"');
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
-    expect(sent.map((m) => [m.vaultId, m.revision])).toEqual([
+    expect(sent.map((m) => [m.vaultId, m.etag])).toEqual([
       [VAULT_ID, '"a-1"'],
       ["w", '"a-2"'],
     ]);
+  });
+
+  it("announces past the max wait while applies keep arriving", async () => {
+    const step = 200;
+
+    for (let i = 1; i <= 11; i++) {
+      metadataChannel.reportRevision(VAULT_ID, `"a-${i}"`);
+      await vi.advanceTimersByTimeAsync(step);
+    }
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: "revision",
+      etag: '"a-11"',
+    });
+
+    metadataChannel.reportRevision(VAULT_ID, '"a-12"');
+    await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1].etag).toBe('"a-12"');
+  });
+
+  it("holds the announcement for a burst that stays inside the max wait", async () => {
+    const step = 200;
+
+    for (let i = 1; i <= 5; i++) {
+      metadataChannel.reportRevision(VAULT_ID, `"a-${i}"`);
+      await vi.advanceTimersByTimeAsync(step);
+    }
+
+    expect(step * 5).toBeLessThan(REVISION_MAX_WAIT_MS);
+    expect(sent).toEqual([]);
+  });
+
+  it("says nothing for a revision noted after the vault was forgotten", async () => {
+    metadataChannel.forgetVault(VAULT_ID);
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
+
+    await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
+
+    expect(sent).toEqual([]);
   });
 });
 
@@ -143,21 +200,23 @@ describe("replacement announcements", () => {
   });
 
   it("announces a replacement without waiting", () => {
-    metadataChannel.noteReplaced(VAULT_ID, '"a-9"');
+    metadataChannel.reportReplacement(VAULT_ID, '"a-9"');
 
     expect(sent).toEqual([
       {
         channel: "metadata",
         vaultId: VAULT_ID,
         type: "replaced",
-        revision: '"a-9"',
+        etag: '"a-9"',
       },
     ]);
   });
 
   it("supersedes a pending announcement, including one above it", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-9"');
-    metadataChannel.noteReplaced(VAULT_ID, '"a-4"');
+    trackVault(VAULT_ID);
+
+    metadataChannel.reportRevision(VAULT_ID, '"a-9"');
+    metadataChannel.reportReplacement(VAULT_ID, '"a-4"');
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
@@ -166,8 +225,8 @@ describe("replacement announcements", () => {
   });
 
   it("does not repeat the replaced revision as an announcement", async () => {
-    metadataChannel.noteReplaced(VAULT_ID, '"a-4"');
-    metadataChannel.noteRevision(VAULT_ID, '"a-4"');
+    metadataChannel.reportReplacement(VAULT_ID, '"a-4"');
+    metadataChannel.reportRevision(VAULT_ID, '"a-4"');
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
@@ -181,7 +240,9 @@ describe("forgetting a vault", () => {
   });
 
   it("drops a pending announcement", async () => {
-    metadataChannel.noteRevision(VAULT_ID, '"a-1"');
+    trackVault(VAULT_ID);
+
+    metadataChannel.reportRevision(VAULT_ID, '"a-1"');
     metadataChannel.forgetVault(VAULT_ID);
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
@@ -201,7 +262,7 @@ describe("against the cache", () => {
         channel: "metadata",
         vaultId: VAULT_ID,
         type: "replaced",
-        revision: entry.etag,
+        etag: entry.etag,
       },
     ]);
   });
@@ -215,13 +276,13 @@ describe("against the cache", () => {
     sent = [];
     vi.useFakeTimers();
 
-    const revision = await bootstrapCache.applyMutation(VAULT_ID, {
+    const etag = await bootstrapCache.applyMutation(VAULT_ID, {
       type: "created",
       path: "b.md",
       stat: fileStat(3, 10),
     });
 
-    metadataChannel.noteRevision(VAULT_ID, revision);
+    metadataChannel.reportRevision(VAULT_ID, etag);
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     expect(sent).toEqual([
@@ -229,7 +290,7 @@ describe("against the cache", () => {
         channel: "metadata",
         vaultId: VAULT_ID,
         type: "revision",
-        revision,
+        etag,
       },
     ]);
   });
@@ -251,12 +312,12 @@ describe("against the cache", () => {
 
     sent = [];
     vi.useFakeTimers();
-    metadataChannel.noteRevision(VAULT_ID, first);
+    metadataChannel.reportRevision(VAULT_ID, first);
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     const second = await bootstrapCache.applyMutation(VAULT_ID, event);
 
-    metadataChannel.noteRevision(VAULT_ID, second);
+    metadataChannel.reportRevision(VAULT_ID, second);
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
     expect(second).toBe(first);
@@ -278,8 +339,31 @@ describe("against the cache", () => {
 
     sent = [];
     vi.useFakeTimers();
-    metadataChannel.noteRevision(VAULT_ID, revision);
+    metadataChannel.reportRevision(VAULT_ID, revision);
     bootstrapCache.invalidateVault(VAULT_ID);
+
+    await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
+
+    expect(sent).toEqual([]);
+  });
+
+  it("says nothing for a revision noted after invalidateAll dropped the entry", async () => {
+    seed("a.md", "a");
+
+    await bootstrapCache.getOrBuild(VAULT_ID);
+
+    vi.spyOn(watcher, "isWatching").mockReturnValue(true);
+
+    const revision = await bootstrapCache.applyMutation(VAULT_ID, {
+      type: "created",
+      path: "b.md",
+      stat: fileStat(3, 10),
+    });
+
+    sent = [];
+    vi.useFakeTimers();
+    bootstrapCache.invalidateAll();
+    metadataChannel.reportRevision(VAULT_ID, revision);
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
 
@@ -301,7 +385,7 @@ describe("against the cache", () => {
 
     sent = [];
     vi.useFakeTimers();
-    metadataChannel.noteRevision(VAULT_ID, revision);
+    metadataChannel.reportRevision(VAULT_ID, revision);
     bootstrapCache.invalidateAll();
 
     await vi.advanceTimersByTimeAsync(REVISION_DEBOUNCE_MS);
