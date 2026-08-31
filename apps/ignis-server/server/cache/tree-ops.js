@@ -9,8 +9,10 @@ function normalizeRel(p) {
     .replace(/^\/+|\/+$/g, "");
 }
 
-function absOf(vaultPath, rel) {
-  return rel ? path.join(vaultPath, rel.split("/").join(path.sep)) : vaultPath;
+function absOf(vaultPath, relPath) {
+  return relPath
+    ? path.join(vaultPath, relPath.split("/").join(path.sep))
+    : vaultPath;
 }
 
 function fileNode(s) {
@@ -36,12 +38,12 @@ async function statDirMtime(absPath) {
   }
 }
 
-function isRepresentable(rel) {
-  return rel !== "" && !rel.split("/").includes("..");
+function isRepresentable(relPath) {
+  return relPath !== "" && !relPath.split("/").includes("..");
 }
 
-function setNode(tree, rel, node) {
-  const current = tree[rel];
+function setNode(tree, relPath, node) {
+  const current = tree[relPath];
 
   if (
     current &&
@@ -53,13 +55,13 @@ function setNode(tree, rel, node) {
     return false;
   }
 
-  tree[rel] = node;
+  tree[relPath] = node;
 
   return true;
 }
 
-async function materializeAncestors(vaultPath, entry, rel) {
-  const parts = rel.split("/");
+async function materializeAncestors(vaultPath, entry, relPath) {
+  const parts = relPath.split("/");
   parts.pop();
 
   let ancestor = "";
@@ -86,23 +88,23 @@ async function materializeAncestors(vaultPath, entry, rel) {
   return changed;
 }
 
-function subtreeKeys(map, rel) {
-  const prefix = rel + "/";
+function subtreeKeys(map, root) {
+  const prefix = root + "/";
 
   return Object.keys(map).filter(
-    (key) => key === rel || key.startsWith(prefix),
+    (key) => key === root || key.startsWith(prefix),
   );
 }
 
-function sweepPrefix(entry, rel) {
+function sweepPrefix(entry, root) {
   let changed = false;
 
-  for (const key of subtreeKeys(entry.response.tree, rel)) {
+  for (const key of subtreeKeys(entry.response.tree, root)) {
     delete entry.response.tree[key];
     changed = true;
   }
 
-  for (const key of subtreeKeys(entry.dirMtimes, rel)) {
+  for (const key of subtreeKeys(entry.dirMtimes, root)) {
     delete entry.dirMtimes[key];
     changed = true;
   }
@@ -110,20 +112,22 @@ function sweepPrefix(entry, rel) {
   return changed;
 }
 
-function removePath(entry, rel) {
-  const node = entry.response.tree[rel];
+function removePath(entry, relPath) {
+  const node = entry.response.tree[relPath];
   // if directory, also clear children
-  const isDirectory = node ? node.type === "directory" : rel in entry.dirMtimes;
+  const isDirectory = node
+    ? node.type === "directory"
+    : relPath in entry.dirMtimes;
 
   if (isDirectory) {
-    return sweepPrefix(entry, rel);
+    return sweepPrefix(entry, relPath);
   }
 
   if (!node) {
     return false;
   }
 
-  delete entry.response.tree[rel];
+  delete entry.response.tree[relPath];
 
   return true;
 }

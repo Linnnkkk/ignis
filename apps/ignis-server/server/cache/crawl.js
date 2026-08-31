@@ -24,7 +24,7 @@ const {
   enqueue,
   openReplayBuffer,
   closeReplayBuffer,
-  applyRecord,
+  applyMutationRecord,
 } = require("./apply");
 const { invalidateVault } = require("./invalidate");
 
@@ -39,12 +39,12 @@ async function walkTree(rootPath) {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
 
     for (const entry of entries) {
-      const rel = prefix ? prefix + "/" + entry.name : entry.name;
+      const relPath = prefix ? prefix + "/" + entry.name : entry.name;
       const full = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        tree[rel] = { type: "directory" };
-        await walk(full, rel);
+        tree[relPath] = { type: "directory" };
+        await walk(full, relPath);
       } else {
         try {
           const buffered = getPending(full);
@@ -55,17 +55,17 @@ async function walkTree(rootPath) {
               ? buffered.data.length
               : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
 
-            tree[rel] = {
+            tree[relPath] = {
               type: "file",
               size,
               mtime: Date.now(),
               ctime: s ? s.ctimeMs : Date.now(),
             };
           } else {
-            tree[rel] = fileNode(await fsp.stat(full));
+            tree[relPath] = fileNode(await fsp.stat(full));
           }
         } catch {
-          tree[rel] = { type: "file" };
+          tree[relPath] = { type: "file" };
         }
       }
     }
@@ -200,8 +200,12 @@ async function swapEntry(vaultId, vaultPath, entry, buffer, token) {
   try {
     let changed = false;
 
-    for (const record of buffer) {
-      const applied = await applyRecord(vaultPath, entry, record);
+    for (const mutationRecord of buffer) {
+      const applied = await applyMutationRecord(
+        vaultPath,
+        entry,
+        mutationRecord,
+      );
       changed = changed || applied;
     }
 

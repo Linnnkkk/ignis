@@ -25,7 +25,7 @@ fs.mkdirSync(vaultDir, { recursive: true });
 const config = require("../config");
 config.refreshVaults();
 const fsRouter = require("./fs");
-const bootstrapCache = require("../bootstrap-cache");
+const bootstrapCache = require("../cache");
 const { writeCoalescer, watcher } = require("@ignis/server-core");
 const express = require("express");
 

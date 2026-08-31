@@ -5,7 +5,7 @@
 const express = require("express");
 const config = require("../config");
 const { sanitizeError } = require("@ignis/server-core");
-const { getOrBuild, getOrCompress } = require("../bootstrap-cache");
+const { getOrBuild, getOrCompress } = require("../cache");
 
 const router = express.Router();
 

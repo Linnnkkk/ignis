@@ -8,7 +8,7 @@ const fsp = fs.promises;
 const path = require("path");
 
 const config = require("../config");
-const bootstrapCache = require("../bootstrap-cache");
+const bootstrapCache = require("../cache");
 
 const { sessions, makeStorageName } = require("./demo-sessions");
 

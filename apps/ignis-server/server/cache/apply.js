@@ -68,9 +68,9 @@ function closeReplayBuffer(vaultId, buffer) {
 }
 
 async function resolveEvent(vaultPath, event) {
-  const rel = normalizeRel(event.path);
+  const relPath = normalizeRel(event.path);
 
-  if (!isRepresentable(rel)) {
+  if (!isRepresentable(relPath)) {
     return null;
   }
 
@@ -84,29 +84,29 @@ async function resolveEvent(vaultPath, event) {
             mtime: event.stat.mtime,
             ctime: event.stat.ctime,
           }
-        : await statFileNode(absOf(vaultPath, rel));
+        : await statFileNode(absOf(vaultPath, relPath));
 
-      return { type: event.type, path: rel, node };
+      return { type: event.type, path: relPath, node };
     }
 
     case "folder-created": {
       if (event.stat) {
-        return { type: event.type, path: rel, mtime: event.stat.mtime };
+        return { type: event.type, path: relPath, mtime: event.stat.mtime };
       }
 
-      const s = await fsp.stat(absOf(vaultPath, rel)).catch(() => null);
+      const s = await fsp.stat(absOf(vaultPath, relPath)).catch(() => null);
 
-      return s ? { type: event.type, path: rel, mtime: s.mtimeMs } : null;
+      return s ? { type: event.type, path: relPath, mtime: s.mtimeMs } : null;
     }
 
     case "deleted":
-      return { type: event.type, path: rel };
+      return { type: event.type, path: relPath };
 
     case "rename": {
       const toPath = normalizeRel(event.toPath);
 
       return isRepresentable(toPath)
-        ? { type: event.type, path: rel, toPath }
+        ? { type: event.type, path: relPath, toPath }
         : null;
     }
 
@@ -115,25 +115,35 @@ async function resolveEvent(vaultPath, event) {
   }
 }
 
-async function applyRecord(vaultPath, entry, record) {
-  const rel = record.path;
+async function applyMutationRecord(vaultPath, entry, mutationRecord) {
+  const relPath = mutationRecord.path;
 
-  switch (record.type) {
+  switch (mutationRecord.type) {
     case "created":
     case "modified": {
-      const materialized = await materializeAncestors(vaultPath, entry, rel);
-      const stored = setNode(entry.response.tree, rel, record.node);
+      const materialized = await materializeAncestors(
+        vaultPath,
+        entry,
+        relPath,
+      );
+      const stored = setNode(entry.response.tree, relPath, mutationRecord.node);
 
       return materialized || stored;
     }
 
     case "folder-created": {
-      const materialized = await materializeAncestors(vaultPath, entry, rel);
-      const stored = setNode(entry.response.tree, rel, { type: "directory" });
+      const materialized = await materializeAncestors(
+        vaultPath,
+        entry,
+        relPath,
+      );
+      const stored = setNode(entry.response.tree, relPath, {
+        type: "directory",
+      });
       let recorded = false;
 
-      if (entry.dirMtimes[rel] !== record.mtime) {
-        entry.dirMtimes[rel] = record.mtime;
+      if (entry.dirMtimes[relPath] !== mutationRecord.mtime) {
+        entry.dirMtimes[relPath] = mutationRecord.mtime;
         recorded = true;
       }
 
@@ -141,13 +151,13 @@ async function applyRecord(vaultPath, entry, record) {
     }
 
     case "deleted":
-      return removePath(entry, rel);
+      return removePath(entry, relPath);
 
     case "rename":
-      return movePath(vaultPath, entry, rel, record.toPath);
+      return movePath(vaultPath, entry, relPath, mutationRecord.toPath);
 
     default:
-      throw new Error(`unknown mutation type: ${record.type}`);
+      throw new Error(`unknown mutation type: ${mutationRecord.type}`);
   }
 }
 
@@ -173,14 +183,14 @@ async function runBatch(vaultId, batch) {
     return null;
   }
 
-  const records = [];
+  const mutationRecords = [];
 
   try {
     for (const event of batch) {
-      const record = await resolveEvent(vaultPath, event);
+      const mutationRecord = await resolveEvent(vaultPath, event);
 
-      if (record) {
-        records.push(record);
+      if (mutationRecord) {
+        mutationRecords.push(mutationRecord);
       }
     }
   } catch (e) {
@@ -189,7 +199,7 @@ async function runBatch(vaultId, batch) {
 
   if (buffers) {
     for (const buffer of buffers) {
-      buffer.push(...records);
+      buffer.push(...mutationRecords);
     }
   }
 
@@ -200,8 +210,12 @@ async function runBatch(vaultId, batch) {
   try {
     let changed = false;
 
-    for (const record of records) {
-      const applied = await applyRecord(vaultPath, entry, record);
+    for (const mutationRecord of mutationRecords) {
+      const applied = await applyMutationRecord(
+        vaultPath,
+        entry,
+        mutationRecord,
+      );
       changed = changed || applied;
     }
 
@@ -226,6 +240,6 @@ module.exports = {
   enqueue,
   openReplayBuffer,
   closeReplayBuffer,
-  applyRecord,
+  applyMutationRecord,
   applyMutation,
 };

@@ -1,7 +1,7 @@
 const express = require("express");
 const { writeCoalescer } = require("@ignis/server-core");
 const settings = require("../settings");
-const bootstrapCache = require("../bootstrap-cache");
+const bootstrapCache = require("../cache");
 
 const router = express.Router();
 

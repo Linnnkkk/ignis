@@ -82,9 +82,9 @@ const proxyRoutes = require("./routes/proxy");
 const versionRoutes = require("./routes/version");
 const settingsRoutes = require("./routes/settings");
 const bootstrapRoutes = require("./routes/bootstrap");
-const bootstrapCache = require("./bootstrap-cache");
-const { createMetadataChannel } = require("./metadata-channel");
-const { registerCacheListeners } = require("./cache-listeners");
+const bootstrapCache = require("./cache");
+const { createMetadataChannel } = require("./cache/metadata-channel");
+const { registerCacheListeners } = require("./cache/listeners");
 const vaultLifecycle = require("./vault-lifecycle");
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));

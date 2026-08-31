@@ -6,7 +6,7 @@ const path = require("path");
 
 const config = require("../config");
 const { watcher } = require("@ignis/server-core");
-const bootstrapCache = require("../bootstrap-cache");
+const bootstrapCache = require("../cache");
 
 const {
   sessions,

@@ -23,11 +23,11 @@ const VAULT_ID = "v";
 const vaultDir = path.join(VAULT_ROOT, VAULT_ID);
 fs.mkdirSync(vaultDir, { recursive: true });
 
-const config = require("./config");
+const config = require("../config");
 config.refreshVaults();
-const bootstrapCache = require("./bootstrap-cache");
+const bootstrapCache = require("./index");
 const { createMetadataChannel } = require("./metadata-channel");
-const { registerCacheListeners } = require("./cache-listeners");
+const { registerCacheListeners } = require("./listeners");
 const { watcher } = require("@ignis/server-core");
 
 const REVISION_DEBOUNCE_MS = 250;

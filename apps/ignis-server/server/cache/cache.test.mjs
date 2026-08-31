@@ -15,7 +15,7 @@ import os from "os";
 const require = createRequire(import.meta.url);
 
 const VAULT_ROOT = fs.mkdtempSync(
-  path.join(os.tmpdir(), "bootstrap-cache-test-"),
+  path.join(os.tmpdir(), "cache-test-"),
 );
 process.env.VAULT_ROOT = VAULT_ROOT;
 

@@ -18,7 +18,7 @@ const {
   cancelPendingSubtree,
   flushPendingSubtree,
 } = writeCoalescer;
-const bootstrapCache = require("../bootstrap-cache");
+const bootstrapCache = require("../cache");
 
 const router = express.Router();
 

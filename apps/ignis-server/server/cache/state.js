@@ -13,7 +13,7 @@ const revalidateOnce = new Set();
 // vaultId -> { tail, generation }, the vault's serialized task chain.
 const applyQueues = new Map();
 
-// vaultId -> Set<record[]>, one buffer per active crawl.
+// vaultId -> Set<mutationRecord[]>, one buffer per active crawl.
 const replayBuffers = new Map();
 
 // entry -> the etag of entry.compressed
