@@ -1,4 +1,11 @@
-function registerCacheListeners({ bootstrapCache, metadataChannel, watcher }) {
+const config = require("../config");
+
+function registerCacheListeners({
+  bootstrapCache,
+  metadataChannel,
+  watcher,
+  writeCoalescer,
+}) {
   bootstrapCache.onEntrySwapped((vaultId, revision) =>
     metadataChannel.reportReplacement(vaultId, revision),
   );
@@ -25,6 +32,24 @@ function registerCacheListeners({ bootstrapCache, metadataChannel, watcher }) {
           e.message,
         ),
     );
+  });
+
+  writeCoalescer.onFlushSuccess((absPath) => {
+    const match = config.vaultForPath(absPath);
+
+    if (!match) {
+      return;
+    }
+
+    // no stat, read mtime from disk.
+    bootstrapCache
+      .applyMutation(match.vaultId, { type: "modified", path: match.relPath })
+      .catch((e) =>
+        console.warn(
+          `[bootstrap] flush apply failed on vault ${match.vaultId} for ${match.relPath}:`,
+          e.message,
+        ),
+      );
   });
 }
 

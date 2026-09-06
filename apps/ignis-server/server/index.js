@@ -261,7 +261,12 @@ wireDemoWebSocket(server);
 
 const metadataChannel = createMetadataChannel(wss);
 
-registerCacheListeners({ bootstrapCache, metadataChannel, watcher });
+registerCacheListeners({
+  bootstrapCache,
+  metadataChannel,
+  watcher,
+  writeCoalescer,
+});
 
 watcher.onWatcherStart((vaultId) => {
   bootstrapCache.markForRevalidation(vaultId);
@@ -279,29 +284,17 @@ watcher.onWatcherRebuild((vaultId) => {
   wss.closeVaultSockets(vaultId);
 });
 
-function vaultForPath(absPath) {
-  const target = path.resolve(absPath);
-
-  for (const [vaultId, vaultPath] of Object.entries(config.vaults)) {
-    const base = path.resolve(vaultPath);
-
-    if (target === base || target.startsWith(base + path.sep)) {
-      return { vaultId, base };
-    }
-  }
-
-  return null;
-}
-
 writeCoalescer.onFlushGiveUp((absPath) => {
-  const match = vaultForPath(absPath);
+  const match = config.vaultForPath(absPath);
 
   if (!match) {
     return;
   }
 
-  const rel = path.relative(match.base, absPath).split(path.sep).join("/");
-  wss.broadcastToVault(match.vaultId, { type: "write-giveup", path: rel });
+  wss.broadcastToVault(match.vaultId, {
+    type: "write-giveup",
+    path: match.relPath,
+  });
 });
 
 async function gracefulShutdown(signal) {

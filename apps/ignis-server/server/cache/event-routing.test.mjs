@@ -20,7 +20,7 @@ config.refreshVaults();
 const bootstrapCache = require("./index");
 const { createMetadataChannel } = require("./metadata-channel");
 const { registerCacheListeners } = require("./listeners");
-const { watcher } = require("@ignis/server-core");
+const { watcher, writeCoalescer } = require("@ignis/server-core");
 
 const REVISION_DEBOUNCE_MS = 250;
 const EVENT_TIMEOUT_MS = 8000;
@@ -42,7 +42,12 @@ const wss = {
 
 const metadataChannel = createMetadataChannel(wss);
 
-registerCacheListeners({ bootstrapCache, metadataChannel, watcher });
+registerCacheListeners({
+  bootstrapCache,
+  metadataChannel,
+  watcher,
+  writeCoalescer,
+});
 
 watcher.onWatcherStart((vaultId) =>
   bootstrapCache.markForRevalidation(vaultId),

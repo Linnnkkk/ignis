@@ -91,6 +91,23 @@ module.exports = {
   getVaultPath(id) {
     return vaults[id] || null;
   },
+  // { vaultId, relPath } or null
+  vaultForPath(absPath) {
+    const target = path.resolve(absPath);
+
+    for (const [vaultId, vaultPath] of Object.entries(vaults)) {
+      const base = path.resolve(vaultPath);
+
+      if (target === base || target.startsWith(base + path.sep)) {
+        return {
+          vaultId,
+          relPath: path.relative(base, target).split(path.sep).join("/"),
+        };
+      }
+    }
+
+    return null;
+  },
   refreshVaults() {
     vaults = discoverVaults();
     return vaults;

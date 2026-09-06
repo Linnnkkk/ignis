@@ -292,6 +292,124 @@ describe("flush-failure durability", () => {
   });
 });
 
+describe("flush success", () => {
+  let flushed;
+
+  beforeEach(() => {
+    flushed = [];
+    coalescer.onFlushSuccess((absPath) => flushed.push(absPath));
+  });
+
+  async function buffer(filePath, data) {
+    await coalescer.writeCoalesced(filePath, "first", "utf-8");
+    await coalescer.writeCoalesced(filePath, data, "utf-8");
+  }
+
+  it("reports the path when the debounce timer flushes", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+
+    await buffer(filePath, "second");
+
+    expect(flushed).toEqual([]);
+
+    await sleep(SHORT_WINDOW_MS + 30);
+
+    expect(flushed).toEqual([filePath]);
+  });
+
+  it("reports the path flushPending wrote", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+
+    await buffer(filePath, "second");
+    await coalescer.flushPending(filePath);
+
+    expect(flushed).toEqual([filePath]);
+  });
+
+  it("says nothing for a flushPending with nothing buffered", async () => {
+    await coalescer.flushPending(path.join(tmpDir, "absent.txt"));
+
+    expect(flushed).toEqual([]);
+  });
+
+  it("reports each path in a subtree flush once", async () => {
+    const dir = path.join(tmpDir, "sub");
+    await fs.promises.mkdir(dir);
+
+    const a = path.join(dir, "a.txt");
+    const b = path.join(dir, "b.txt");
+
+    await buffer(a, "second-a");
+    await buffer(b, "second-b");
+    await coalescer.flushPendingSubtree(dir);
+
+    expect(flushed.slice().sort()).toEqual([a, b].sort());
+  });
+
+  it("reports every path flushAll drains", async () => {
+    const a = path.join(tmpDir, "a.txt");
+    const b = path.join(tmpDir, "b.txt");
+
+    await buffer(a, "second-a");
+    await buffer(b, "second-b");
+    await coalescer.flushAll();
+
+    expect(flushed.slice().sort()).toEqual([a, b].sort());
+  });
+
+  it("says nothing for a write that goes straight to disk", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+
+    await coalescer.writeCoalesced(filePath, "only", "utf-8");
+    await sleep(SHORT_WINDOW_MS + 30);
+
+    expect(flushed).toEqual([]);
+  });
+
+  it("says nothing for a failed flush and reports the retry that lands", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+
+    await buffer(filePath, "second");
+
+    vi.spyOn(fs.promises, "writeFile").mockRejectedValueOnce(
+      Object.assign(new Error("EIO"), { code: "EIO" }),
+    );
+
+    await expect(coalescer.flushPending(filePath)).rejects.toThrow();
+
+    expect(flushed).toEqual([]);
+
+    await sleep(RETRY_BACKOFF_MS + 50);
+
+    expect(flushed).toEqual([filePath]);
+  });
+
+  it("stops reporting once unsubscribed", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+    const unsubscribed = [];
+    const off = coalescer.onFlushSuccess((absPath) =>
+      unsubscribed.push(absPath),
+    );
+
+    off();
+    await buffer(filePath, "second");
+    await coalescer.flushPending(filePath);
+
+    expect(unsubscribed).toEqual([]);
+    expect(flushed).toEqual([filePath]);
+  });
+
+  it("drops subscribers on reset", async () => {
+    const filePath = path.join(tmpDir, "file.txt");
+
+    coalescer._reset();
+    await buffer(filePath, "second");
+    await coalescer.flushPending(filePath);
+
+    expect(flushed).toEqual([]);
+  });
+});
+
 describe("flush give-up", () => {
   const GIVE_UP_MS = SHORT_WINDOW_MS + RETRY_BACKOFF_MS * FLUSH_ATTEMPTS + 150;
 

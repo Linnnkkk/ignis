@@ -28,7 +28,7 @@ config.refreshVaults();
 const bootstrapCache = require("./index");
 const { createMetadataChannel } = require("./metadata-channel");
 const { registerCacheListeners } = require("./listeners");
-const { watcher } = require("@ignis/server-core");
+const { watcher, writeCoalescer } = require("@ignis/server-core");
 
 const REVISION_DEBOUNCE_MS = 250;
 const REVISION_MAX_WAIT_MS = 2000;
@@ -59,6 +59,7 @@ registerCacheListeners({
   bootstrapCache,
   metadataChannel: channelRef,
   watcher,
+  writeCoalescer,
 });
 
 beforeEach(() => {
