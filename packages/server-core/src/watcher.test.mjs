@@ -249,6 +249,7 @@ describe("watcher start hook", () => {
     expect(starts).toHaveLength(1);
     expect(starts[0]).toMatchObject({ rebuilt: false, errors: 1 });
     expect(starts[0].tracked).toBeGreaterThanOrEqual(3);
+    expect(watcher.isWatching(VAULT_ID)).toBe(true);
   });
 
   it("stops firing after offWatcherStart", async () => {

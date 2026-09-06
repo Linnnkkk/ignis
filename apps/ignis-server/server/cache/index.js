@@ -1,4 +1,4 @@
-const { walkTree, getOrBuild, warmUp } = require("./crawl");
+const { walkTree, getOrBuild, reconcileVault, warmUp } = require("./crawl");
 const { applyMutation } = require("./apply");
 const { getOrCompress } = require("./compress");
 const {
@@ -6,11 +6,18 @@ const {
   invalidateAll,
   markForRevalidation,
 } = require("./invalidate");
-const { onEntrySwapped, onVaultInvalidated } = require("./state");
+const {
+  onEntrySwapped,
+  onVaultInvalidated,
+  onStaleEntryServed,
+  lastCrawlAt,
+} = require("./state");
 
 module.exports = {
   walkTree,
   getOrBuild,
+  reconcileVault,
+  lastCrawlAt,
   getOrCompress,
   applyMutation,
   invalidateVault,
@@ -18,5 +25,6 @@ module.exports = {
   markForRevalidation,
   onEntrySwapped,
   onVaultInvalidated,
+  onStaleEntryServed,
   warmUp,
 };

@@ -199,6 +199,10 @@ function getPending(absPath) {
   return null;
 }
 
+function pendingPaths() {
+  return Array.from(pending.keys());
+}
+
 function cancelPending(absPath) {
   const entry = pending.get(absPath);
 
@@ -311,6 +315,7 @@ function _reset() {
 module.exports = {
   writeCoalesced,
   getPending,
+  pendingPaths,
   cancelPending,
   flushPending,
   cancelPendingSubtree,

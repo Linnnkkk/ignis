@@ -1,32 +1,59 @@
 const fs = require("fs");
 const fsp = fs.promises;
 const config = require("../config");
-const { cache, applyQueues, replayBuffers, nextEtag } = require("./state");
+const { cache, applyQueues, activeCrawls, nextEtag } = require("./state");
 const {
   normalizeRel,
   absOf,
   statFileNode,
   isRepresentable,
   setNode,
-  materializeAncestors,
+  addMissingParentDirs,
   removePath,
   movePath,
 } = require("./tree-ops");
 const { markCompressionStale } = require("./compress");
 const { invalidateVault } = require("./invalidate");
 
+const QUEUE_STALL_THRESHOLD_MS = 30 * 1000;
+
+function startStallTimer(vaultId, queue) {
+  queue.stallTimer = setTimeout(() => {
+    queue.stallTimer = null;
+
+    console.warn(
+      `[bootstrap] apply queue on vault ${vaultId}: no task has completed in ${Math.round(QUEUE_STALL_THRESHOLD_MS / 1000)}s`,
+    );
+  }, QUEUE_STALL_THRESHOLD_MS);
+  queue.stallTimer.unref?.();
+}
+
+function clearStallTimer(queue) {
+  clearTimeout(queue.stallTimer);
+  queue.stallTimer = null;
+}
+
 function enqueue(vaultId, task) {
   let queue = applyQueues.get(vaultId);
 
   if (!queue) {
-    queue = { tail: Promise.resolve(), generation: 0 };
+    queue = { tail: Promise.resolve(), generation: 0, stallTimer: null };
     applyQueues.set(vaultId, queue);
   }
 
   const generation = queue.generation;
-  const gated = () => (queue.generation === generation ? task() : null);
+  const gated = () => {
+    if (queue.generation !== generation) {
+      return null;
+    }
+
+    startStallTimer(vaultId, queue);
+
+    return task();
+  };
+  const settle = () => clearStallTimer(queue);
   const run = queue.tail.then(gated, gated);
-  const tail = run.catch(() => {});
+  const tail = run.then(settle, settle);
 
   queue.tail = tail;
 
@@ -39,32 +66,29 @@ function enqueue(vaultId, task) {
   return run;
 }
 
-function openReplayBuffer(vaultId) {
-  const buffer = [];
-  let buffers = replayBuffers.get(vaultId);
-
-  if (!buffers) {
-    buffers = new Set();
-    replayBuffers.set(vaultId, buffers);
+function beginCrawl(vaultId) {
+  if (activeCrawls.has(vaultId)) {
+    console.warn(
+      `[bootstrap] crawl began on vault ${vaultId} while one is active`,
+    );
   }
 
-  buffers.add(buffer);
+  const crawl = { mutations: [] };
 
-  return buffer;
+  activeCrawls.set(vaultId, crawl);
+
+  return crawl;
 }
 
-function closeReplayBuffer(vaultId, buffer) {
-  const buffers = replayBuffers.get(vaultId);
-
-  if (!buffers) {
-    return;
+function endCrawl(vaultId, crawl) {
+  // a superseded crawl must not end the one that replaced it
+  if (activeCrawls.get(vaultId) === crawl) {
+    activeCrawls.delete(vaultId);
   }
+}
 
-  buffers.delete(buffer);
-
-  if (buffers.size === 0) {
-    replayBuffers.delete(vaultId);
-  }
+function isCrawling(vaultId) {
+  return activeCrawls.has(vaultId);
 }
 
 async function resolveEvent(vaultPath, event) {
@@ -121,22 +145,14 @@ async function applyMutationRecord(vaultPath, entry, mutationRecord) {
   switch (mutationRecord.type) {
     case "created":
     case "modified": {
-      const materialized = await materializeAncestors(
-        vaultPath,
-        entry,
-        relPath,
-      );
+      const added = await addMissingParentDirs(vaultPath, entry, relPath);
       const stored = setNode(entry.response.tree, relPath, mutationRecord.node);
 
-      return materialized || stored;
+      return added || stored;
     }
 
     case "folder-created": {
-      const materialized = await materializeAncestors(
-        vaultPath,
-        entry,
-        relPath,
-      );
+      const added = await addMissingParentDirs(vaultPath, entry, relPath);
       const stored = setNode(entry.response.tree, relPath, {
         type: "directory",
       });
@@ -147,7 +163,7 @@ async function applyMutationRecord(vaultPath, entry, mutationRecord) {
         recorded = true;
       }
 
-      return materialized || stored || recorded;
+      return added || stored || recorded;
     }
 
     case "deleted":
@@ -177,9 +193,9 @@ function failBatch(vaultId, e) {
 async function runBatch(vaultId, batch) {
   const vaultPath = config.getVaultPath(vaultId);
   const entry = cache.get(vaultId);
-  const buffers = replayBuffers.get(vaultId);
+  const crawl = activeCrawls.get(vaultId);
 
-  if (!vaultPath || (!entry && !buffers)) {
+  if (!vaultPath || (!entry && !crawl)) {
     return null;
   }
 
@@ -197,10 +213,8 @@ async function runBatch(vaultId, batch) {
     return failBatch(vaultId, e);
   }
 
-  if (buffers) {
-    for (const buffer of buffers) {
-      buffer.push(...mutationRecords);
-    }
+  if (crawl) {
+    crawl.mutations.push(...mutationRecords);
   }
 
   if (!entry) {
@@ -238,8 +252,9 @@ function applyMutation(vaultId, events) {
 
 module.exports = {
   enqueue,
-  openReplayBuffer,
-  closeReplayBuffer,
+  beginCrawl,
+  endCrawl,
+  isCrawling,
   applyMutationRecord,
   applyMutation,
 };

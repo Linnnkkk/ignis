@@ -14,9 +14,7 @@ import os from "os";
 
 const require = createRequire(import.meta.url);
 
-const VAULT_ROOT = fs.mkdtempSync(
-  path.join(os.tmpdir(), "cache-test-"),
-);
+const VAULT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "cache-test-"));
 process.env.VAULT_ROOT = VAULT_ROOT;
 
 const VAULT_ID = "v";
@@ -43,7 +41,11 @@ function whenReady(entry) {
   return new Promise((resolve) => entry.watcher.on("ready", resolve));
 }
 
-function injectMidCrawl(fn) {
+const staleServed = [];
+
+bootstrapCache.onStaleEntryServed((vaultId) => staleServed.push(vaultId));
+
+function runMidCrawl(fn) {
   const realReaddir = fs.promises.readdir;
   let injected = false;
 
@@ -63,6 +65,7 @@ function injectMidCrawl(fn) {
 
 beforeEach(() => {
   bootstrapCache.invalidateAll();
+  staleServed.length = 0;
   fs.rmSync(vaultDir, { recursive: true, force: true });
   fs.mkdirSync(vaultDir, { recursive: true });
 });
@@ -118,7 +121,7 @@ describe("watched and unwatched serving modes", () => {
     expect(statSpy).toHaveBeenCalledWith(vaultDir);
   });
 
-  it("rebuilds an unwatched vault whose directory mtime moved", async () => {
+  it("serves an unwatched vault whose directory mtime moved, and reports it", async () => {
     seed("a.md", "a");
 
     const first = await bootstrapCache.getOrBuild(VAULT_ID);
@@ -127,10 +130,31 @@ describe("watched and unwatched serving modes", () => {
     await sleep(50);
     seed("direct.md", "direct");
 
-    const second = await bootstrapCache.getOrBuild(VAULT_ID);
+    const logs = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    let second;
 
-    expect(second.response.tree["direct.md"]).toMatchObject({ type: "file" });
-    expect(second.etag).not.toBe(first.etag);
+    try {
+      second = await bootstrapCache.getOrBuild(VAULT_ID);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(second).toBe(first);
+    expect(second.response.tree["direct.md"]).toBeUndefined();
+    expect(logs.filter((l) => l.includes("build files="))).toEqual([]);
+    expect(staleServed).toEqual([VAULT_ID]);
+  });
+
+  it("says nothing about an unwatched vault that still matches disk", async () => {
+    seed("a.md", "a");
+
+    await bootstrapCache.getOrBuild(VAULT_ID);
+    await bootstrapCache.getOrBuild(VAULT_ID);
+
+    expect(staleServed).toEqual([]);
   });
 });
 
@@ -199,7 +223,7 @@ describe("invalidation", () => {
     await bootstrapCache.getOrBuild(VAULT_ID);
     bootstrapCache.invalidateVault(VAULT_ID);
 
-    const readdirSpy = injectMidCrawl(() => {
+    const readdirSpy = runMidCrawl(() => {
       seed("late.md", "late");
       bootstrapCache.invalidateVault(VAULT_ID); // as the watcher event would.
     });
@@ -219,7 +243,7 @@ describe("invalidation", () => {
   it("serves but does not store a crawl invalidateAll superseded", async () => {
     seed("a.md", "a");
 
-    const readdirSpy = injectMidCrawl(() => {
+    const readdirSpy = runMidCrawl(() => {
       seed("late.md", "late");
       bootstrapCache.invalidateAll();
     });
@@ -341,9 +365,8 @@ describe("revalidation after a watcher start", () => {
 
     const served = await bootstrapCache.getOrBuild(VAULT_ID);
 
-    expect(served).not.toBe(first);
-    expect(served.response.tree["offline.md"]).toMatchObject({ type: "file" });
-    expect(served.response.tree["a.md"]).toBeUndefined();
+    expect(served).toBe(first);
+    expect(staleServed).toEqual([VAULT_ID]);
 
     const statSpy = vi.spyOn(fs.promises, "stat");
 
@@ -351,18 +374,25 @@ describe("revalidation after a watcher start", () => {
 
     expect(again).toBe(served);
     expect(statSpy).not.toHaveBeenCalled();
+    expect(staleServed).toEqual([VAULT_ID]);
+
+    await bootstrapCache.reconcileVault(VAULT_ID);
+
+    const healed = await bootstrapCache.getOrBuild(VAULT_ID);
+
+    expect(healed.response.tree["offline.md"]).toMatchObject({ type: "file" });
+    expect(healed.response.tree["a.md"]).toBeUndefined();
   }, 20000);
 
-  it("keeps the mark when the crawl it armed fails", async () => {
+  it("heals on retry after a marked cold-cache crawl throws", async () => {
     seed("a.md", "a");
 
-    const first = await bootstrapCache.getOrBuild(VAULT_ID);
+    await bootstrapCache.getOrBuild(VAULT_ID);
 
     vi.spyOn(watcher, "isWatching").mockReturnValue(true);
+    bootstrapCache.invalidateVault(VAULT_ID);
     bootstrapCache.markForRevalidation(VAULT_ID);
 
-    // Windows directory mtime granularity is coarser than back-to-back writes.
-    await sleep(50);
     seed("offline.md", "offline");
     fs.rmSync(path.join(vaultDir, "a.md"));
 
@@ -380,7 +410,6 @@ describe("revalidation after a watcher start", () => {
 
     const served = await bootstrapCache.getOrBuild(VAULT_ID);
 
-    expect(served).not.toBe(first);
     expect(served.response.tree["offline.md"]).toMatchObject({ type: "file" });
     expect(served.response.tree["a.md"]).toBeUndefined();
   });

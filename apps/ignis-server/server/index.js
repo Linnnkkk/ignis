@@ -83,6 +83,7 @@ const versionRoutes = require("./routes/version");
 const settingsRoutes = require("./routes/settings");
 const bootstrapRoutes = require("./routes/bootstrap");
 const bootstrapCache = require("./cache");
+const treeReconcile = require("./cache/reconcile");
 const { createMetadataChannel } = require("./cache/metadata-channel");
 const { registerCacheListeners } = require("./cache/listeners");
 const vaultLifecycle = require("./vault-lifecycle");
@@ -262,8 +263,13 @@ const metadataChannel = createMetadataChannel(wss);
 
 registerCacheListeners({ bootstrapCache, metadataChannel, watcher });
 
-watcher.onWatcherStart((vaultId) =>
-  bootstrapCache.markForRevalidation(vaultId),
+watcher.onWatcherStart((vaultId) => {
+  bootstrapCache.markForRevalidation(vaultId);
+  treeReconcile.startSchedule(vaultId);
+});
+
+bootstrapCache.onStaleEntryServed((vaultId) =>
+  treeReconcile.scheduleReconcile(vaultId),
 );
 
 // Per-client listeners die along with their watcher.

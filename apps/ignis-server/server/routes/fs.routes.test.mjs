@@ -59,6 +59,7 @@ afterAll(() => {
 
 beforeEach(() => {
   writeCoalescer._reset();
+  bootstrapCache.invalidateAll(); // start from a cold cache
 
   for (const entry of fs.readdirSync(vaultDir)) {
     fs.rmSync(path.join(vaultDir, entry), { recursive: true, force: true });
@@ -88,6 +89,11 @@ const unlink = (p) => fetch(u(`unlink?${q(p)}`), { method: "DELETE" });
 const rmdir = (p) => fetch(u(`rmdir?${q(p)}`), { method: "DELETE" });
 const rmRecursive = (p) =>
   fetch(u(`rm?${q(p)}&recursive=true`), { method: "DELETE" });
+
+const settle = async () => {
+  await sleep(30);
+  await bootstrapCache.applyMutation(VAULT_ID, []); // wait for queue
+};
 
 // Seed a buffered write: first write hits disk, second is held in the coalescer buffer.
 async function bufferWrite(p, first, second) {
@@ -183,7 +189,7 @@ describe("tree route root responses come from the bootstrap cache", () => {
     expect(tree["fresh.md"]).toMatchObject({ type: "file" });
   });
 
-  it("picks up a file created on disk outside the HTTP routes", async () => {
+  it("serves the tree it holds when a file appears outside the HTTP routes", async () => {
     await writeFile("seed.md", "seed");
     await getTree(`vault=${VAULT_ID}`);
 
@@ -191,10 +197,27 @@ describe("tree route root responses come from the bootstrap cache", () => {
     await sleep(50);
     fs.writeFileSync(abs("direct.md"), "direct");
 
-    const tree = await getTree(`vault=${VAULT_ID}`);
+    const logs = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      logs.push(args.join(" "));
+    });
+    let stale;
 
-    expect(tree["direct.md"]).toMatchObject({ type: "file" });
-    expect(tree["seed.md"]).toMatchObject({ type: "file" });
+    try {
+      stale = await getTree(`vault=${VAULT_ID}`);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(stale["direct.md"]).toBeUndefined();
+    expect(logs.filter((l) => l.includes("build files="))).toEqual([]);
+
+    await bootstrapCache.reconcileVault(VAULT_ID);
+
+    const healed = await getTree(`vault=${VAULT_ID}`);
+
+    expect(healed["direct.md"]).toMatchObject({ type: "file" });
+    expect(healed["seed.md"]).toMatchObject({ type: "file" });
   });
 
   it("serves two concurrent root requests from one build", async () => {
@@ -258,6 +281,7 @@ describe("tree route conditional fetch via ETag", () => {
     await first.json();
 
     await writeFile("added.md", "new");
+    await settle();
 
     const second = await getTree(`vault=${VAULT_ID}`, {
       "If-None-Match": oldEtag,
@@ -275,11 +299,6 @@ describe("mutation routes apply to a watched vault's tree", () => {
   const treeRes = (headers) =>
     fetch(u(`tree?vault=${VAULT_ID}`), headers ? { headers } : undefined);
   const tree = async () => (await treeRes()).json();
-
-  const settle = async () => {
-    await sleep(30);
-    await bootstrapCache.applyMutation(VAULT_ID, []); // wait for queue
-  };
 
   let logs;
 

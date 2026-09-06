@@ -9,21 +9,24 @@ const {
 const { getVersion } = require("../version");
 const settings = require("../settings");
 const { watcher, writeCoalescer } = require("@ignis/server-core");
-const { getPending } = writeCoalescer;
+const { getPending, pendingPaths } = writeCoalescer;
 const {
   cache,
   pendingBuilds,
-  crawlTokens,
+  activeCrawls,
   revalidateOnce,
+  lastCrawls,
   nextEtag,
   notifyEntrySwapped,
+  notifyStaleEntryServed,
 } = require("./state");
 const { absOf, fileNode } = require("./tree-ops");
 const { getOrCompress, markCompressionStale } = require("./compress");
 const {
   enqueue,
-  openReplayBuffer,
-  closeReplayBuffer,
+  beginCrawl,
+  endCrawl,
+  isCrawling,
   applyMutationRecord,
 } = require("./apply");
 const { invalidateVault } = require("./invalidate");
@@ -33,8 +36,11 @@ async function walkTree(rootPath) {
   const dirMtimes = {};
 
   async function walk(dir, prefix) {
-    const stat = await fsp.stat(dir);
-    dirMtimes[prefix] = stat.mtimeMs;
+    // skip revalidation for excluded directories
+    if (!watcher.isIgnoredPath(prefix)) {
+      const stat = await fsp.stat(dir);
+      dirMtimes[prefix] = stat.mtimeMs;
+    }
 
     const entries = await fsp.readdir(dir, { withFileTypes: true });
 
@@ -94,6 +100,24 @@ function buildVaultList() {
   }));
 }
 
+function buildResponse(vaultId, vaultPath, tree, etag) {
+  return {
+    vault: buildVaultInfo(vaultId, vaultPath),
+    vaultList: buildVaultList(),
+    tree,
+    etag,
+    // In demo mode, hide server-side plugins from the client.
+    plugins: config.demoMode ? [] : getDiscoveredPlugins(),
+    virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),
+    settings: {
+      contentCacheBytes: settings.get("contentCacheBytes"),
+      inputCacheBytes: settings.get("inputCacheBytes"),
+      inputCacheTtlMs: settings.get("inputCacheTtlMs"),
+      directFetchHosts: settings.get("directFetchHosts"),
+    },
+  };
+}
+
 async function dirMtimesUnchanged(vaultPath, dirMtimes) {
   const checks = await Promise.all(
     Object.entries(dirMtimes).map(async ([relDir, oldMtime]) => {
@@ -123,49 +147,32 @@ async function buildEntry(vaultId) {
   // consume vaultid for revalidation
   const revalidate = revalidateOnce.delete(vaultId);
 
-  if (
-    cached &&
-    ((watcher.isWatching(vaultId) && !revalidate) ||
-      (await dirMtimesUnchanged(vaultPath, cached.dirMtimes)))
-  ) {
+  if (cached) {
+    if (
+      !(watcher.isWatching(vaultId) && !revalidate) &&
+      !(await dirMtimesUnchanged(vaultPath, cached.dirMtimes))
+    ) {
+      notifyStaleEntryServed(vaultId);
+    }
+
     return cached;
   }
 
   const t0 = Date.now();
   const etag = nextEtag();
-  const vault = buildVaultInfo(vaultId, vaultPath);
-  const token = {};
-
-  crawlTokens.set(vaultId, token);
-
-  const buffer = openReplayBuffer(vaultId);
+  const crawl = beginCrawl(vaultId);
 
   try {
     const { tree, dirMtimes } = await walkTree(vaultPath);
 
-    const response = {
-      vault,
-      vaultList: buildVaultList(),
-      tree,
-      etag,
-      // In demo mode, hide server-side plugins from the client.
-      plugins: config.demoMode ? [] : getDiscoveredPlugins(),
-      virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),
-      settings: {
-        contentCacheBytes: settings.get("contentCacheBytes"),
-        inputCacheBytes: settings.get("inputCacheBytes"),
-        inputCacheTtlMs: settings.get("inputCacheTtlMs"),
-        directFetchHosts: settings.get("directFetchHosts"),
-      },
-    };
+    lastCrawls.set(vaultId, Date.now());
 
+    const response = buildResponse(vaultId, vaultPath, tree, etag);
     const entry = { response, dirMtimes, compressed: {}, etag };
 
     await getOrCompress(entry);
 
-    await enqueue(vaultId, () =>
-      swapEntry(vaultId, vaultPath, entry, buffer, token),
-    );
+    await enqueue(vaultId, () => swapEntry(vaultId, vaultPath, entry, crawl));
 
     const ms = Date.now() - t0;
     const fileCount = Object.keys(tree).filter(
@@ -178,34 +185,21 @@ async function buildEntry(vaultId) {
     );
 
     return entry;
-  } catch (e) {
-    // failed to revalidate, schedule a revalidation on next request
-    if (revalidate) {
-      revalidateOnce.add(vaultId);
-    }
-
-    throw e;
   } finally {
-    closeReplayBuffer(vaultId, buffer);
+    endCrawl(vaultId, crawl);
   }
 }
 
-async function swapEntry(vaultId, vaultPath, entry, buffer, token) {
-  if (crawlTokens.get(vaultId) !== token) {
-    closeReplayBuffer(vaultId, buffer);
-
+async function swapEntry(vaultId, vaultPath, entry, crawl) {
+  if (activeCrawls.get(vaultId) !== crawl) {
     return;
   }
 
   try {
     let changed = false;
 
-    for (const mutationRecord of buffer) {
-      const applied = await applyMutationRecord(
-        vaultPath,
-        entry,
-        mutationRecord,
-      );
+    for (const mutation of crawl.mutations) {
+      const applied = await applyMutationRecord(vaultPath, entry, mutation);
       changed = changed || applied;
     }
 
@@ -214,24 +208,208 @@ async function swapEntry(vaultId, vaultPath, entry, buffer, token) {
     }
   } catch (e) {
     console.warn(`[bootstrap] replay failed on vault ${vaultId}:`, e.message);
-    closeReplayBuffer(vaultId, buffer);
     invalidateVault(vaultId);
 
     return;
   }
 
   // An invalidation can land during the replay's own I/O.
-  if (crawlTokens.get(vaultId) !== token) {
-    closeReplayBuffer(vaultId, buffer);
-
+  if (activeCrawls.get(vaultId) !== crawl) {
     return;
   }
 
-  // the buffer must close before the entry is stored.
-  closeReplayBuffer(vaultId, buffer);
-  crawlTokens.delete(vaultId);
+  // the crawl must end before the entry is stored.
+  endCrawl(vaultId, crawl);
   cache.set(vaultId, entry);
   notifyEntrySwapped(vaultId, entry.etag);
+}
+
+function pendingRelPaths(vaultPath) {
+  const relPaths = new Set();
+
+  for (const absPath of pendingPaths()) {
+    const relPath = path.relative(vaultPath, absPath).split(path.sep).join("/");
+
+    if (relPath && relPath !== ".." && !relPath.startsWith("../")) {
+      relPaths.add(relPath);
+    }
+  }
+
+  return relPaths;
+}
+
+function getParentDirs(path) {
+  const dirs = [];
+  let lastSlash = path.lastIndexOf("/");
+
+  while (lastSlash > 0) {
+    dirs.push(path.slice(0, lastSlash));
+    lastSlash = path.lastIndexOf("/", lastSlash - 1);
+  }
+
+  return dirs;
+}
+
+function isPathInAnySubtree(path, roots) {
+  return roots.has(path) || getParentDirs(path).some((dir) => roots.has(dir));
+}
+
+function buildExclusionPredicate(mutationRecords, pending) {
+  const skippedSubtrees = new Set();
+  const skippedDirs = new Set();
+
+  for (const mutation of mutationRecords) {
+    const paths = [mutation.path];
+
+    if (mutation.toPath) {
+      paths.push(mutation.toPath); // a rename also touches its destination
+    }
+
+    for (const path of paths) {
+      skippedSubtrees.add(path);
+
+      for (const dir of getParentDirs(path)) {
+        skippedDirs.add(dir);
+      }
+    }
+  }
+
+  const isExcluded = (path) =>
+    watcher.isIgnoredPath(path) ||
+    pending.has(path) ||
+    skippedDirs.has(path) ||
+    isPathInAnySubtree(path, skippedSubtrees);
+
+  return isExcluded;
+}
+
+function nodesEqual(a, b) {
+  return (
+    a.type === b.type &&
+    a.size === b.size &&
+    a.mtime === b.mtime &&
+    a.ctime === b.ctime
+  );
+}
+
+function diffTrees(stored, fresh, excluded) {
+  const missing = [];
+  const extra = [];
+  const changed = [];
+
+  for (const path of Object.keys(fresh)) {
+    if (excluded(path)) {
+      continue;
+    }
+
+    const node = stored[path];
+
+    if (!node) {
+      missing.push(path);
+    } else if (!nodesEqual(node, fresh[path])) {
+      changed.push(path);
+    }
+  }
+
+  for (const path of Object.keys(stored)) {
+    if (!(path in fresh) && !excluded(path)) {
+      extra.push(path);
+    }
+  }
+
+  return { missing, extra, changed };
+}
+
+const DRIFT_SAMPLE = 5;
+
+function describeDrift(drift) {
+  const paths = [...drift.missing, ...drift.extra, ...drift.changed];
+  const rest = paths.length - DRIFT_SAMPLE;
+  const sample =
+    paths.slice(0, DRIFT_SAMPLE).join(", ") + (rest > 0 ? `, +${rest}` : "");
+
+  return (
+    `missing=${drift.missing.length} extra=${drift.extra.length} ` +
+    `changed=${drift.changed.length} (${sample})`
+  );
+}
+
+function adoptDirMtimes(vaultId, crawl, entry, dirMtimes) {
+  if (activeCrawls.get(vaultId) !== crawl || cache.get(vaultId) !== entry) {
+    return;
+  }
+
+  for (const dir of Object.keys(entry.dirMtimes)) {
+    if (dir in dirMtimes) {
+      entry.dirMtimes[dir] = dirMtimes[dir];
+    }
+  }
+}
+
+async function reconcileVault(vaultId) {
+  const vaultPath = config.getVaultPath(vaultId);
+
+  if (!vaultPath || isCrawling(vaultId) || !cache.has(vaultId)) {
+    return null;
+  }
+
+  const crawl = beginCrawl(vaultId);
+
+  // snapshot paths that may get flushed during the walk
+  const snapshot = pendingRelPaths(vaultPath);
+
+  try {
+    const { tree, dirMtimes } = await walkTree(vaultPath);
+
+    lastCrawls.set(vaultId, Date.now());
+
+    const entry = cache.get(vaultId);
+
+    if (!entry) {
+      return null;
+    }
+
+    // merge all pending paths for exclusion
+    const pending = new Set([...snapshot, ...pendingRelPaths(vaultPath)]);
+
+    const drift = diffTrees(
+      entry.response.tree,
+      tree,
+      buildExclusionPredicate(crawl.mutations, pending),
+    );
+
+    const drifted =
+      drift.missing.length + drift.extra.length + drift.changed.length > 0;
+
+    if (!drifted) {
+      // a mutation never refreshes its parent dir's recorded mtime
+      await enqueue(vaultId, () =>
+        adoptDirMtimes(vaultId, crawl, entry, dirMtimes),
+      );
+
+      return { drifted, ...drift };
+    }
+
+    console.warn(
+      `[tree-reconcile] vault=${vaultId} drift ${describeDrift(drift)}`,
+    );
+
+    const etag = nextEtag();
+    const replacement = {
+      response: buildResponse(vaultId, vaultPath, tree, etag),
+      dirMtimes,
+      compressed: {},
+      etag,
+    };
+
+    await enqueue(vaultId, () =>
+      swapEntry(vaultId, vaultPath, replacement, crawl),
+    );
+
+    return { drifted, ...drift };
+  } finally {
+    endCrawl(vaultId, crawl);
+  }
 }
 
 async function getOrBuild(vaultId) {
@@ -263,5 +441,6 @@ async function warmUp() {
 module.exports = {
   walkTree,
   getOrBuild,
+  reconcileVault,
   warmUp,
 };

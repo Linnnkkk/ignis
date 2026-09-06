@@ -31,8 +31,8 @@ const { watcher } = require("@ignis/server-core");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const seed = (rel, content) => {
-  const abs = path.join(vaultDir, rel);
+const seed = (relPath, content) => {
+  const abs = path.join(vaultDir, relPath);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
   fs.writeFileSync(abs, content);
 };
@@ -42,7 +42,7 @@ const apply = (events) => bootstrapCache.applyMutation(VAULT_ID, events);
 const fileStat = (size, mtime) => ({ size, mtime, ctime: mtime });
 const revisionOf = (etag) => Number(etag.replace(/"/g, "").split("-")[1]);
 
-function injectMidCrawl(fn) {
+function runMidCrawl(fn) {
   const realReaddir = fs.promises.readdir;
   let injected = false;
 
@@ -279,7 +279,7 @@ describe("crawls in flight", () => {
   it("replays a mutation onto a crawl that started with an empty slot", async () => {
     seed("a.md", "a");
 
-    const readdirSpy = injectMidCrawl(async () => {
+    const readdirSpy = runMidCrawl(async () => {
       seed("late.md", "late");
       await apply({ type: "created", path: "late.md" });
     });
@@ -292,20 +292,20 @@ describe("crawls in flight", () => {
     expect(await build()).toBe(entry);
   });
 
-  it("writes to the live entry and to the crawl the mutation raced", async () => {
+  it("applies a mid-crawl mutation to both the live entry and the crawl", async () => {
     seed("a.md", "a");
 
     const first = await build();
 
-    // Windows directory mtime granularity is coarser than back-to-back writes.
-    await sleep(50);
     seed("direct.md", "direct");
-    bootstrapCache.markForRevalidation(VAULT_ID);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const readdirSpy = injectMidCrawl(async () => {
+    const readdirSpy = runMidCrawl(async () => {
       seed("late.md", "late");
       await apply({ type: "created", path: "late.md" });
     });
+
+    await bootstrapCache.reconcileVault(VAULT_ID);
 
     const second = await build();
 
@@ -336,7 +336,7 @@ describe("crawls in flight", () => {
         return realStat.call(fs.promises, p, ...rest);
       });
 
-    const readdirSpy = injectMidCrawl(async () => {
+    const readdirSpy = runMidCrawl(async () => {
       seed("x/y/z.md", "z");
       await apply({ type: "created", path: "x/y/z.md" });
       armed = true;
@@ -361,7 +361,7 @@ describe("crawls in flight", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const statSpy = vi.spyOn(fs.promises, "stat");
 
-    const readdirSpy = injectMidCrawl(async () => {
+    const readdirSpy = runMidCrawl(async () => {
       await apply({ type: "rename", path: "ghost", toPath: "nowhere" });
       bootstrapCache.invalidateVault(VAULT_ID);
     });
@@ -383,7 +383,7 @@ describe("crawls in flight", () => {
   it("replays a delete that raced the crawl of its directory", async () => {
     seed("d/gone.md", "gone");
 
-    const readdirSpy = injectMidCrawl(async () => {
+    const readdirSpy = runMidCrawl(async () => {
       await apply({ type: "deleted", path: "d" });
     });
 
@@ -546,7 +546,53 @@ describe("queue", () => {
     expect(rebuilt.response.tree["c.md"]).toMatchObject({ type: "file" });
   });
 
-  it("applies in unwatched mode, where the next request crawls anyway", async () => {
+  it("warns once when a task stops making progress", async () => {
+    seed("a.md", "a");
+
+    const entry = await build();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const realStat = fs.promises.stat;
+    let release;
+    const held = new Promise((r) => (release = r));
+
+    vi.spyOn(fs.promises, "stat").mockImplementation((p, ...rest) =>
+      held.then(() => realStat.call(fs.promises, p, ...rest)),
+    );
+    vi.useFakeTimers();
+
+    const stalled = [];
+    let pending;
+
+    try {
+      seed("wedged.md", "wedged");
+      pending = apply({ type: "created", path: "wedged.md" });
+
+      await vi.advanceTimersByTimeAsync(29 * 1000);
+
+      stalled.push(warn.mock.calls.length);
+
+      await vi.advanceTimersByTimeAsync(2 * 1000);
+
+      stalled.push(warn.mock.calls.length);
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+
+      stalled.push(warn.mock.calls.length);
+    } finally {
+      vi.useRealTimers();
+      release();
+    }
+
+    await pending;
+
+    expect(stalled).toEqual([0, 1, 1]);
+    expect(warn.mock.calls[0].join(" ")).toBe(
+      `[bootstrap] apply queue on vault ${VAULT_ID}: no task has completed in 30s`,
+    );
+    expect(entry.response.tree["wedged.md"]).toMatchObject({ type: "file" });
+  });
+
+  it("applies in unwatched mode, leaving the recorded mtime behind", async () => {
     seed("a.md", "a");
     watcher.isWatching.mockReturnValue(false);
 
@@ -563,7 +609,7 @@ describe("queue", () => {
 
     const second = await build();
 
-    expect(second).not.toBe(first);
+    expect(second).toBe(first);
     expect(second.response.tree["b.md"]).toMatchObject({ type: "file" });
   });
 });

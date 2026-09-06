@@ -3,6 +3,7 @@ const fs = require("fs");
 const config = require("../config");
 const path = require("path");
 const bootstrapCache = require("../cache");
+const treeReconcile = require("../cache/reconcile");
 const { withWatcherStopped } = require("../vault-lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
 
@@ -119,6 +120,7 @@ router.post("/rename", async (req, res) => {
     );
 
     config.refreshVaults();
+    treeReconcile.cancelVault(vaultId);
     bootstrapCache.invalidateVault(vaultId);
     bootstrapCache.invalidateVault(newName);
 
@@ -149,6 +151,7 @@ router.delete("/remove", async (req, res) => {
     );
 
     config.refreshVaults();
+    treeReconcile.cancelVault(vaultId);
     bootstrapCache.invalidateVault(vaultId);
 
     res.json({ ok: true });

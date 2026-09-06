@@ -27,8 +27,8 @@ const EVENT_TIMEOUT_MS = 8000;
 const CASE_TIMEOUT_MS = 20000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const seed = (rel, content) =>
-  fs.writeFileSync(path.join(vaultDir, rel), content);
+const seed = (relPath, content) =>
+  fs.writeFileSync(path.join(vaultDir, relPath), content);
 
 let sent = [];
 

@@ -60,7 +60,7 @@ function setNode(tree, relPath, node) {
   return true;
 }
 
-async function materializeAncestors(vaultPath, entry, relPath) {
+async function addMissingParentDirs(vaultPath, entry, relPath) {
   const parts = relPath.split("/");
   parts.pop();
 
@@ -77,6 +77,7 @@ async function materializeAncestors(vaultPath, entry, relPath) {
       changed = true;
     }
 
+    // never refresh recorded directory mtimes, ensure dir mtime only mutated by external changes
     if (!(ancestor in entry.dirMtimes)) {
       entry.dirMtimes[ancestor] = await statDirMtime(
         absOf(vaultPath, ancestor),
@@ -148,10 +149,10 @@ async function movePath(vaultPath, entry, from, to) {
       throw new Error(`rename of an unrecorded directory: ${from}`);
     }
 
-    const materialized = await materializeAncestors(vaultPath, entry, to);
+    const added = await addMissingParentDirs(vaultPath, entry, to);
     const stored = setNode(tree, to, fileNode(s));
 
-    return materialized || stored;
+    return added || stored;
   }
 
   sweepPrefix(entry, to);
@@ -166,7 +167,7 @@ async function movePath(vaultPath, entry, from, to) {
     delete entry.dirMtimes[key];
   }
 
-  await materializeAncestors(vaultPath, entry, to);
+  await addMissingParentDirs(vaultPath, entry, to);
 
   return true;
 }
@@ -179,7 +180,7 @@ module.exports = {
   statDirMtime,
   isRepresentable,
   setNode,
-  materializeAncestors,
+  addMissingParentDirs,
   subtreeKeys,
   sweepPrefix,
   removePath,
