@@ -5,6 +5,8 @@ const { spawnOb, runCommand } = require("./ob-cli");
 
 const MAX_LOG_ENTRIES = 200;
 const MAX_LOG_LINE = 4096;
+const IDLE_CHECK_DIVISOR = 4;
+const MIN_IDLE_CHECK_MS = 1000;
 
 function killProcess(proc) {
   if (!proc) {
@@ -24,6 +26,7 @@ class SyncManager {
     this.broadcaster = broadcaster;
     this.states = new Map();
     this.stateFile = path.join(ctx.dataDir, "sync-states.json");
+    this.idleRestartMs = ctx.config.headlessSyncIdleRestartMs || 0;
   }
 
   loadStates(vaults) {
@@ -126,10 +129,22 @@ class SyncManager {
     }
 
     if (state.status === "running") {
-      this.ctx.log(`Sync already running for ${vaultId}`);
-      return this.getState(vaultId);
+      this.ctx.log(`Taking over sync for ${vaultId} (pid: ${state.pid})`);
+      this.addLog(state, `Replacing sync process ${state.pid}`);
+      this.stopProcess(state);
     }
 
+    this.spawnProcess(state);
+
+    this.broadcaster.broadcastStatus(this.getState(vaultId));
+    this.ctx.log(`Started sync for ${vaultId} (pid: ${state.pid})`);
+    this.saveStates();
+
+    return this.getState(vaultId);
+  }
+
+  spawnProcess(state) {
+    const vaultId = state.vaultId;
     const args = ["sync", "--continuous"];
 
     if (state.config.mode === "pull-only") {
@@ -145,8 +160,11 @@ class SyncManager {
     state.error = null;
     state.autoStart = true;
     state._process = proc;
+    state.lastActivity = new Date().toISOString();
+    state._userStopped = false;
 
     this.addLog(state, `Sync started (pid: ${proc.pid})`);
+    this.startIdleRestartTimer(state);
 
     proc.stdout.on("data", (data) => {
       const lines = data.toString().split("\n");
@@ -174,8 +192,13 @@ class SyncManager {
     });
 
     proc.on("close", (code) => {
-      // If the user explicitly stopped sync, don't overwrite the clean
-      // "stopped" state with an error from the non-zero exit code.
+      if (state._process !== proc) {
+        return;
+      }
+
+      this.clearIdleRestartTimer(state);
+
+      // Don't overwrite "stopped" state if the user explicitly stopped sync
       if (state._userStopped) {
         state._userStopped = false;
         return;
@@ -198,6 +221,12 @@ class SyncManager {
     });
 
     proc.on("error", (err) => {
+      if (state._process !== proc) {
+        return;
+      }
+
+      this.clearIdleRestartTimer(state);
+
       state.status = "error";
       state.error = err.message;
       state.pid = null;
@@ -208,27 +237,31 @@ class SyncManager {
       this.broadcaster.broadcastStatus(this.getState(vaultId));
       this.saveStates();
     });
+  }
 
-    this.broadcaster.broadcastStatus(this.getState(vaultId));
-    this.ctx.log(`Started sync for ${vaultId} (pid: ${proc.pid})`);
-    this.saveStates();
-
-    return this.getState(vaultId);
+  stopProcess(state) {
+    this.clearIdleRestartTimer(state);
+    killProcess(state._process);
+    state._process = null;
   }
 
   stopSync(vaultId) {
     const state = this.states.get(vaultId);
 
-    if (!state || !state._process) {
+    if (!state) {
       throw new Error(`No active sync for vault: ${vaultId}`);
     }
 
-    state._userStopped = true;
-    killProcess(state._process);
+    if (state._process) {
+      state._userStopped = true;
+    }
+
+    this.stopProcess(state);
+
     state.status = "stopped";
     state.pid = null;
     state.autoStart = false;
-    state._process = null;
+    state.error = null;
 
     this.addLog(state, "Sync stopped by user");
     this.ctx.log(`Stopped sync for ${vaultId}`);
@@ -244,6 +277,8 @@ class SyncManager {
     if (!state) {
       throw new Error(`No sync configuration for vault: ${vaultId}`);
     }
+
+    this.clearIdleRestartTimer(state);
 
     if (state._process) {
       state._userStopped = true;
@@ -314,6 +349,52 @@ class SyncManager {
     }
   }
 
+  startIdleRestartTimer(state) {
+    if (this.idleRestartMs <= 0) {
+      return;
+    }
+
+    const period = Math.max(
+      MIN_IDLE_CHECK_MS,
+      Math.floor(this.idleRestartMs / IDLE_CHECK_DIVISOR),
+    );
+
+    const timer = setInterval(() => {
+      if (!state._process) {
+        return;
+      }
+
+      const idleMs = Date.now() - Date.parse(state.lastActivity);
+
+      if (idleMs >= this.idleRestartMs) {
+        this.ctx.log(
+          `Restarting idle sync for ${state.vaultId} (pid: ${state.pid})`,
+        );
+        this.addLog(
+          state,
+          `No activity for ${this.idleRestartMs}ms, restarting sync (HEADLESS_SYNC_IDLE_RESTART_MS)`,
+        );
+
+        this.stopProcess(state);
+        this.spawnProcess(state);
+        this.broadcaster.broadcastStatus(this.getState(state.vaultId));
+      }
+    }, period);
+
+    if (timer.unref) {
+      timer.unref();
+    }
+
+    state._idleRestartTimer = timer;
+  }
+
+  clearIdleRestartTimer(state) {
+    if (state._idleRestartTimer) {
+      clearInterval(state._idleRestartTimer);
+      state._idleRestartTimer = null;
+    }
+  }
+
   autoStartAll() {
     let started = 0;
 
@@ -339,6 +420,8 @@ class SyncManager {
     const waitPromises = [];
 
     for (const [vaultId, state] of this.states) {
+      this.clearIdleRestartTimer(state);
+
       if (state._process) {
         this.ctx.log(`Stopping sync for ${vaultId}...`);
         state._userStopped = true;

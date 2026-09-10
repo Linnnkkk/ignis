@@ -51,6 +51,14 @@ For example:
 | `WRITE_COALESCE_MS` | `0` | Debounce window in milliseconds for rapid writes. Raise it on slow filesystems such as rclone, NFS, or SMB. Max 60000. |
 | `UV_THREADPOOL_SIZE` | `4` | Node variable controlling how many file operations Ignis can run concurrently. Raising it helps with large vaults on network filesystems. |
 
+## Headless Sync
+
+Applies to the [Headless Sync](/docs/using/server-plugins/) server plugin.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `HEADLESS_SYNC_IDLE_RESTART_MS` | `0` | Precautionary idle check. Since there is no output difference between an idle and a frozen sync process, this timeout can be used to force regular restarts of the sync process. Disabled when set to `0`. |
+
 ---
 
 Demo mode adds its own `DEMO_*` variables for running a public, throwaway instance. See [`examples/demo/`](https://github.com/Nystik-gh/ignis/tree/main/apps/ignis-server/examples/demo) in the repository.

@@ -122,6 +122,10 @@ module.exports = {
   demoTemplateDir:
     process.env.DEMO_TEMPLATE_DIR || path.join(__dirname, "demo-template"),
 
+  // 0 = disabled
+  headlessSyncIdleRestartMs:
+    parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
+
   obsidianAssetsPath:
     process.env.OBSIDIAN_ASSETS_PATH ||
     path.join(REPO_ROOT, "investigation", "obsidian_1.12.7_unpacked"),
