@@ -39,7 +39,7 @@ If notes open but images and attachments don't, the usual cause is the server wa
 
 Ignis detects external changes by watching the files on the disk. If changes are not being detected, this is usually due to a limit on how many files can be watched, or if the vault lives on a network share.
 
-If you see errors mentioning `fs.inotify.max_user_watches` in the container logs, the host has run out of file watches, and raising the limit is covered in [Network filesystems](/docs/server/deploy/#network-filesystems).
+If you see errors mentioning `fs.inotify.max_user_watches` in the container logs, the host has run out of file watches, and raising the limit is covered in [Network filesystems](/docs/server/deploy/#network-filesystems). Alternatively you can lower the count by excluding certain paths using the watcher ignore list. More information can be found in [Performance](/docs/performance/#ignored-paths).
 
 If your vault is on a mounted network share, Ignis's file watcher cannot detect changes made by other clients of the network share beyond the host machine Ignis is running on. Reloading the tab will load changes made from other machines.
 

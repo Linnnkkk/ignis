@@ -270,6 +270,8 @@ function renderServerSettings(containerEl, current, app) {
     key: "writeCoalesceMs",
     toStored: (n) => n,
   });
+
+  ignoreRulesField(advanced, current);
 }
 
 // Persist a single setting. The server validates, applies the live ones, and saves.
@@ -285,8 +287,11 @@ async function saveSetting(partial) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || "Save failed");
     }
+
+    return true;
   } catch (e) {
     new Notice(`Failed to save setting: ${e.message}`);
+    return false;
   }
 }
 
@@ -373,13 +378,14 @@ function proxyAccessField(parent, current, app) {
   applyVisibility();
 }
 
-function listField(containerEl, { name, desc, value, key, app, modal }) {
-  let current = [...(value || [])];
-
+function listField(
+  containerEl,
+  { name, desc, value, key, app, modal, savedNotice },
+) {
   const setting = new Setting(containerEl).setName(name).setDesc(desc);
 
   const setLabel = (btn) =>
-    btn.setButtonText(current.length ? `Edit (${current.length})` : "Edit");
+    btn.setButtonText(value.length ? `Edit (${value.length})` : "Edit");
 
   setting.addButton((btn) => {
     setLabel(btn);
@@ -390,17 +396,89 @@ function listField(containerEl, { name, desc, value, key, app, modal }) {
         placeholder: modal.placeholder,
         emptyNote: modal.emptyNote,
         recommended: modal.recommended,
-        values: current,
-        onChange: (next) => {
-          current = next;
-          saveSetting({ [key]: current });
+        values: value,
+        onChange: async (edited) => {
+          value = edited;
           setLabel(btn);
+
+          if ((await saveSetting({ [key]: value })) && savedNotice) {
+            new Notice(savedNotice);
+          }
         },
       }).open();
     });
   });
 
   return setting;
+}
+
+function ignoreRulesField(containerEl, current) {
+  let rules = current.ignoreRules;
+
+  const setting = new Setting(containerEl)
+    .setName("Ignored paths")
+    .setDesc(
+      createFragment((frag) => {
+        frag.appendText(
+          "Rules for paths to ignore when watching for file changes. Ignored paths still appear in the vault and can be manually refreshed. Uses gitignore patterns ",
+        );
+        frag.createEl("a", {
+          text: "Learn more",
+          href: "https://ignis.thiefling.com/docs/performance/#ignored-paths",
+          attr: { target: "_blank", rel: "noopener noreferrer" },
+        });
+      }),
+    );
+
+  const setLabel = (btn) =>
+    btn.setButtonText(rules.length ? `Edit (${rules.length})` : "Edit");
+
+  setting.addButton((btn) => {
+    setLabel(btn);
+
+    btn.onClick(() => {
+      openIgnoreRulesEditor({
+        rules,
+        suggestions: current.ignoreSuggestions,
+        onChange: (edited) => {
+          rules = edited;
+          setLabel(btn);
+        },
+        onClose: async (edited) => {
+          rules = edited;
+          await saveSetting({ ignoreRules: edited });
+        },
+      });
+    });
+  });
+}
+
+function openIgnoreRulesEditor(opts) {
+  const component = new window.IgnisUI.IgnoreRulesEditor({
+    // mount to settings modal to avoid focus issues
+    target: document.querySelector(".modal-container") || document.body,
+    props: {
+      rules: opts.rules,
+      suggestions: opts.suggestions,
+    },
+  });
+
+  let latest = opts.rules;
+  let dirty = false;
+
+  component.$on("change", (event) => {
+    latest = event.detail;
+    dirty = true;
+    opts.onChange(latest);
+  });
+
+  component.$on("close", () => {
+    component.$destroy();
+
+    if (dirty) {
+      opts.onClose(latest);
+    }
+  });
 }
 
 export { display };

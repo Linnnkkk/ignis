@@ -23,6 +23,7 @@ const {
 } = require("./plugin-system/manager");
 const pluginRoutes = require("./routes/plugins");
 writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
+watcher.configure({ ignoredPaths: settings.resolveIgnoreLines() });
 const { flushAll } = writeCoalescer;
 const { setupDemo, wireDemoWebSocket } = require("./demo");
 

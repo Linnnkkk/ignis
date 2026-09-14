@@ -12,6 +12,7 @@ const {
   onStaleEntryServed,
   lastCrawlAt,
 } = require("./state");
+const { ignoreSuggestions } = require("./ignore-suggestions");
 
 module.exports = {
   walkTree,
@@ -26,5 +27,6 @@ module.exports = {
   onEntrySwapped,
   onVaultInvalidated,
   onStaleEntryServed,
+  ignoreSuggestions,
   warmUp,
 };

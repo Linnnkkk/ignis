@@ -363,6 +363,31 @@ describe("mutation routes apply to a watched vault's tree", () => {
     expect(crawlLines()).toEqual([]);
   });
 
+  it("skips a write to a path a configured pattern covers", async () => {
+    watcher.configure({ ignoredPaths: ["@eaDir"] });
+
+    const before = await treeRes();
+    await before.json();
+
+    const spy = captureLogs();
+    let after;
+
+    try {
+      expect((await writeFile("@eaDir/thumb.jpg", "jpg")).ok).toBe(true);
+      await settle();
+
+      after = await treeRes();
+    } finally {
+      spy.mockRestore();
+      watcher.configure({ ignoredPaths: [".git"] });
+    }
+
+    expect(exists("@eaDir/thumb.jpg")).toBe(true);
+    expect((await after.json())["@eaDir/thumb.jpg"]).toBeUndefined();
+    expect(after.headers.get("etag")).toBe(before.headers.get("etag"));
+    expect(crawlLines()).toEqual([]);
+  });
+
   it("materializes the directories a deep write passes through", async () => {
     await tree();
 

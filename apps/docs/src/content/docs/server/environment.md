@@ -50,6 +50,7 @@ For example:
 | `AUTO_CREATE_DEFAULT` | `false` | Create a "My Vault" vault on startup when none exist. |
 | `WRITE_COALESCE_MS` | `0` | Debounce window in milliseconds for rapid writes. Raise it on slow filesystems such as rclone, NFS, or SMB. Max 60000. |
 | `UV_THREADPOOL_SIZE` | `4` | Node variable controlling how many file operations Ignis can run concurrently. Raising it helps with large vaults on network filesystems. |
+| `IGNORED_PATHS` | none | Comma-separated gitignore patterns Ignis does not watch or track, added to the rule sets from Settings. See [Performance](/docs/performance/#ignored-paths). |
 
 ## Headless Sync
 

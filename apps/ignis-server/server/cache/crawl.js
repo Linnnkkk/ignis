@@ -30,6 +30,7 @@ const {
   applyMutationRecord,
 } = require("./apply");
 const { invalidateVault } = require("./invalidate");
+const { suggestionsForTree } = require("./ignore-suggestions");
 
 async function walkTree(rootPath) {
   const tree = {};
@@ -80,6 +81,24 @@ async function walkTree(rootPath) {
   await walk(rootPath, "");
 
   return { tree, dirMtimes };
+}
+
+function logIgnoreSuggestions(vaultId, tree) {
+  for (const { pluginDir, fileCount, patterns } of suggestionsForTree(tree)) {
+    console.log(
+      `[ignore-suggest] vault=${vaultId} plugin=${pluginDir} ` +
+        `files=${fileCount} patterns=${patterns.join(" ")}`,
+    );
+  }
+}
+
+async function crawlVault(vaultId, vaultPath) {
+  const result = await walkTree(vaultPath);
+
+  lastCrawls.set(vaultId, Date.now());
+  logIgnoreSuggestions(vaultId, result.tree);
+
+  return result;
 }
 
 function buildVaultInfo(vaultId, vaultPath) {
@@ -163,9 +182,7 @@ async function buildEntry(vaultId) {
   const crawl = beginCrawl(vaultId);
 
   try {
-    const { tree, dirMtimes } = await walkTree(vaultPath);
-
-    lastCrawls.set(vaultId, Date.now());
+    const { tree, dirMtimes } = await crawlVault(vaultId, vaultPath);
 
     const response = buildResponse(vaultId, vaultPath, tree, etag);
     const entry = { response, dirMtimes, compressed: {}, etag };
@@ -359,9 +376,7 @@ async function reconcileVault(vaultId) {
   const snapshot = pendingRelPaths(vaultPath);
 
   try {
-    const { tree, dirMtimes } = await walkTree(vaultPath);
-
-    lastCrawls.set(vaultId, Date.now());
+    const { tree, dirMtimes } = await crawlVault(vaultId, vaultPath);
 
     const entry = cache.get(vaultId);
 

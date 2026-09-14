@@ -30,3 +30,5 @@ See [Hardening](/docs/security/hardening/) for what the proxy exposes and why yo
 ## Advanced
 
 **Write coalesce window** (default 0, off) debounces rapid writes on slow filesystems such as rclone, NFS, or SMB. Max 60000. The same setting is available as the [`WRITE_COALESCE_MS`](/docs/server/environment/) environment variable.
+
+**Ignored paths** are paths the server does not watch or track for changes, using rules defined with gitignore patterns. When creating rule sets for path exclusion, ignis also provides suggestions for plugin paths it determines to be heavy on the file watcher. See [Performance](/docs/performance/#ignored-paths).

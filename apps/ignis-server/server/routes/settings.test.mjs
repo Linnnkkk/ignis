@@ -47,6 +47,47 @@ describe("settings validate", () => {
     ).toEqual({ directFetchHosts: ["api.example.com", "imt.example.com"] });
   });
 
+  it("accepts valid ignore rule sets, trimming and keeping pattern order", () => {
+    expect(
+      validate({
+        ignoreRules: [
+          { name: "System", patterns: [" @eaDir ", "#recycle", "!a/b.md"] },
+        ],
+      }),
+    ).toEqual({
+      ignoreRules: [
+        { name: "System", patterns: ["@eaDir", "#recycle", "!a/b.md"] },
+      ],
+    });
+  });
+
+  it("defaults a missing rule name to an empty string", () => {
+    expect(validate({ ignoreRules: [{ patterns: [".git"] }] })).toEqual({
+      ignoreRules: [{ name: "", patterns: [".git"] }],
+    });
+  });
+
+  it("rejects ignoreRules that is not an array", () => {
+    expect(() => validate({ ignoreRules: ".git" })).toThrow();
+  });
+
+  it("rejects a rule set missing its patterns array", () => {
+    expect(() => validate({ ignoreRules: [{ name: "x" }] })).toThrow();
+  });
+
+  it("rejects a rule set with no patterns", () => {
+    expect(() => validate({ ignoreRules: [{ patterns: [] }] })).toThrow();
+  });
+
+  it("rejects a rule set with an empty or non-string pattern", () => {
+    expect(() =>
+      validate({ ignoreRules: [{ patterns: [".git", ""] }] }),
+    ).toThrow();
+    expect(() =>
+      validate({ ignoreRules: [{ patterns: [".git", 5] }] }),
+    ).toThrow();
+  });
+
   it("rejects a non-array allowlist or an empty entry", () => {
     expect(() => validate({ proxyAllowlist: "x" })).toThrow();
     expect(() => validate({ proxyAllowlist: ["ok", "  "] })).toThrow();

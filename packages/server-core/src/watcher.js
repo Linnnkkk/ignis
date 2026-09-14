@@ -1,10 +1,33 @@
 const chokidar = require("chokidar");
 const path = require("path");
+const ignore = require("ignore");
 
-const IGNORED_PATH = /(^|[/\\])\.git([/\\]|$)/;
+const DEFAULT_IGNORED_PATHS = [".git"];
+
+function compileIgnoreList(patterns) {
+  // escape '#' to avoid treating it like a gitignore comment
+  const lines = patterns.map((line) =>
+    line.startsWith("#") ? "\\" + line : line,
+  );
+
+  return ignore({ allowRelativePaths: true }).add(lines);
+}
+
+let ignoreList = compileIgnoreList(DEFAULT_IGNORED_PATHS);
+
+function configure(opts) {
+  if (Array.isArray(opts?.ignoredPaths)) {
+    ignoreList = compileIgnoreList(opts.ignoredPaths);
+  }
+}
 
 function isIgnoredPath(p) {
-  return IGNORED_PATH.test(p);
+  const rel = String(p == null ? "" : p)
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/+|\/+$/g, "");
+
+  return rel !== "" && ignoreList.ignores(rel);
 }
 
 // Idle window before a watcher with no listeners stops.
@@ -87,7 +110,7 @@ function startWatching(vaultId, vaultPath) {
       stabilityThreshold: 300,
       pollInterval: 100,
     },
-    ignored: [IGNORED_PATH],
+    ignored: (fullPath) => isIgnoredPath(path.relative(vaultPath, fullPath)),
   });
 
   const entry = {
@@ -216,6 +239,17 @@ function stopWatching(vaultId) {
   });
 }
 
+function stopAll() {
+  const closings = [];
+
+  for (const vaultId of vaultWatchers.keys()) {
+    closings.push(stopWatching(vaultId));
+    notifyRebuild(vaultId);
+  }
+
+  return Promise.all(closings);
+}
+
 function isWatching(vaultId) {
   const entry = vaultWatchers.get(vaultId);
 
@@ -283,13 +317,16 @@ function _reset() {
   globalListeners.clear();
   startListeners.clear();
   rebuildListeners.clear();
+  ignoreList = compileIgnoreList(DEFAULT_IGNORED_PATHS);
 
   return Promise.all(closings);
 }
 
 module.exports = {
+  configure,
   startWatching,
   stopWatching,
+  stopAll,
   isWatching,
   isIgnoredPath,
   addListener,

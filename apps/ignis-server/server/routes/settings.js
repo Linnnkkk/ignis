@@ -1,5 +1,5 @@
 const express = require("express");
-const { writeCoalescer } = require("@ignis/server-core");
+const { writeCoalescer, watcher } = require("@ignis/server-core");
 const settings = require("../settings");
 const bootstrapCache = require("../cache");
 
@@ -70,18 +70,69 @@ function validate(body) {
     clean[key] = list.map((v) => v.trim());
   }
 
+  if (body.ignoreRules !== undefined) {
+    if (!Array.isArray(body.ignoreRules)) {
+      throw new Error("ignoreRules must be an array of rule sets");
+    }
+
+    clean.ignoreRules = body.ignoreRules.map((rule) => {
+      if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+        throw new Error("each ignoreRules entry must be an object");
+      }
+
+      const patterns = rule.patterns;
+
+      if (
+        !Array.isArray(patterns) ||
+        patterns.length < 1 ||
+        patterns.some((p) => typeof p !== "string" || !p.trim())
+      ) {
+        throw new Error(
+          "each ignoreRules entry needs a patterns array of non-empty strings",
+        );
+      }
+
+      return {
+        name: rule.name === undefined ? "" : String(rule.name),
+        patterns: patterns.map((p) => p.trim()),
+      };
+    });
+  }
+
   return clean;
 }
 
-function applySettings(effective) {
+function sameList(a, b) {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
+}
+
+function ruleLines(rules) {
+  return Array.isArray(rules)
+    ? rules.flatMap((r) => (Array.isArray(r.patterns) ? r.patterns : []))
+    : [];
+}
+
+async function applySettings(effective, previous) {
   writeCoalescer.configure({ writeCoalesceMs: effective.writeCoalesceMs });
+
+  if (
+    sameList(ruleLines(effective.ignoreRules), ruleLines(previous.ignoreRules))
+  ) {
+    return;
+  }
+
+  watcher.configure({ ignoredPaths: settings.resolveIgnoreLines() });
+  await watcher.stopAll();
 }
 
 router.get("/", (req, res) => {
-  res.json(settings.getAll());
+  res.json({
+    ...settings.getAll(),
+    ignoreSuggestions: bootstrapCache.ignoreSuggestions(),
+  });
 });
 
-router.post("/", (req, res) => {
+router.post("/", async (req, res) => {
   let clean;
 
   try {
@@ -92,8 +143,10 @@ router.post("/", (req, res) => {
     return res.status(400).json({ error: e.message });
   }
 
+  const previous = settings.getAll();
   const effective = settings.update(clean);
-  applySettings(effective);
+
+  await applySettings(effective, previous);
 
   // Cache sizes ride in the bootstrap response; clear it so the next page load picks up new values.
   bootstrapCache.invalidateAll();
