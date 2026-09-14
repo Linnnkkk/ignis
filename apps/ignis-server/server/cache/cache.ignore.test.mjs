@@ -80,6 +80,24 @@ describe("a crawl under a configured ignore list", () => {
     expect(await build()).toBe(entry);
   });
 
+  it("counts changes under an ignored path as drift when includeIgnored is set", async () => {
+    watcher.configure({ ignoredPaths: ["@eaDir"] });
+
+    seed("a.md", "a");
+    seed("@eaDir/thumb.jpg", "t");
+
+    await build();
+
+    seed("@eaDir/second.jpg", "t2");
+    fs.rmSync(path.join(vaultDir, "@eaDir", "thumb.jpg"));
+
+    const result = await bootstrapCache.reconcileVault(VAULT_ID, {
+      includeIgnored: true,
+    });
+
+    expect(result.drifted).toBe(true);
+  });
+
   it("does not read a path a new pattern covers as drift", async () => {
     seed("a.md", "a");
     seed("@eaDir/thumb.jpg", "t");

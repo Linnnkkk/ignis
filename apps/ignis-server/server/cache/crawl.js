@@ -271,7 +271,11 @@ function isPathInAnySubtree(path, roots) {
   return roots.has(path) || getParentDirs(path).some((dir) => roots.has(dir));
 }
 
-function buildExclusionPredicate(mutationRecords, pending) {
+function buildExclusionPredicate(
+  mutationRecords,
+  pending,
+  includeIgnored = false,
+) {
   const skippedSubtrees = new Set();
   const skippedDirs = new Set();
 
@@ -292,7 +296,7 @@ function buildExclusionPredicate(mutationRecords, pending) {
   }
 
   const isExcluded = (path) =>
-    watcher.isIgnoredPath(path) ||
+    (!includeIgnored && watcher.isIgnoredPath(path)) ||
     pending.has(path) ||
     skippedDirs.has(path) ||
     isPathInAnySubtree(path, skippedSubtrees);
@@ -363,7 +367,7 @@ function adoptDirMtimes(vaultId, crawl, entry, dirMtimes) {
   }
 }
 
-async function reconcileVault(vaultId) {
+async function reconcileVault(vaultId, { includeIgnored = false } = {}) {
   const vaultPath = config.getVaultPath(vaultId);
 
   if (!vaultPath || isCrawling(vaultId) || !cache.has(vaultId)) {
@@ -390,7 +394,7 @@ async function reconcileVault(vaultId) {
     const drift = diffTrees(
       entry.response.tree,
       tree,
-      buildExclusionPredicate(crawl.mutations, pending),
+      buildExclusionPredicate(crawl.mutations, pending, includeIgnored),
     );
 
     const drifted =

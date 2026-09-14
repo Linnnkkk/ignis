@@ -67,6 +67,14 @@ export const vaultService = {
     return true;
   },
 
+  async refreshVault(id) {
+    return fetchJson(API_BASE + "/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vault: id }),
+    });
+  },
+
   async renameVault(id, newName) {
     await fetchJson(API_BASE + "/rename", {
       method: "POST",

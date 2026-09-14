@@ -7,7 +7,7 @@ Large vaults and plugin-heavy vaults may suffer some performance issues. These i
 
 ## Ignored paths
 
-Specified paths that the server does not watch for changes and does not send any events for. This means that external changes to those files, or changes in a different tab, are not observed and so not conveyed to clients or open tabs. These paths still appear in the vault and can be refreshed using the manual refresh command.
+Specified paths that the server does not watch for changes and does not send any events for. This means that external changes to those files, or changes in a different tab, are not observed and so not conveyed to clients or open tabs. These paths still appear in the vault and can be refreshed using `Refresh vault from disk` in the command palette.
 
 The rules for file watcher exclusion are defined as gitignore patterns in the Ignored paths setting under Advanced in the Ignis settings tab. You can add your own patterns manually, or if Ignis has detected a plugin with a lot of files it considers a potential performance problem, you can easily add the suggested paths to your exclusion list.
 

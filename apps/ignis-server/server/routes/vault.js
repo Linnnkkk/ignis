@@ -59,6 +59,29 @@ router.get("/info", async (req, res) => {
   });
 });
 
+// POST /api/vault/refresh { vault } - reconcile the whole vault against disk, including ignored paths
+router.post("/refresh", async (req, res) => {
+  const vault = req.body?.vault;
+
+  if (!config.getVaultPath(vault)) {
+    return res.status(404).json({ error: "Vault not found" });
+  }
+
+  try {
+    const result = await bootstrapCache.reconcileVault(vault, {
+      includeIgnored: true,
+    });
+
+    if (!result) {
+      return res.json({ ok: true, reconciled: false, drifted: false });
+    }
+
+    res.json({ ok: true, reconciled: true, drifted: result.drifted });
+  } catch (e) {
+    res.status(500).json(sanitizeError(e));
+  }
+});
+
 // POST /api/vault/create { name } - create a new vault in VAULT_ROOT
 router.post("/create", async (req, res) => {
   const name = req.body?.name;

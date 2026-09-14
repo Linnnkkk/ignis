@@ -12,7 +12,7 @@ import * as pluginRegistry from "./plugin-registry.js";
 import { initStatusBar } from "./status-bar.js";
 import { initSaveNotice } from "./save-notice.js";
 import { installLoadingGate } from "./loading-gate.js";
-import { WorkspacePickerModal } from "./workspace-picker.js";
+import { registerCommands } from "./commands/index.js";
 import { startDemoGuards, stopDemoGuards } from "./demo-guards.js";
 import { initInsecureApiNotice } from "./insecure-api-notice.js";
 import { initProxyBlockNotice } from "./proxy-block-notice.js";
@@ -43,13 +43,7 @@ class IgnisBridgePlugin extends Plugin {
       showFilePicker(this.app);
     });
 
-    this.addCommand({
-      id: "open-workspace-in-new-tab",
-      name: "Open workspace in new tab",
-      callback: () => {
-        new WorkspacePickerModal(this.app).open();
-      },
-    });
+    registerCommands(this);
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
