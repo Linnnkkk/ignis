@@ -1,5 +1,5 @@
 const auth = require("./auth");
-const obCli = require("./ob-cli");
+const obCli = require("../../obsidian-account/ob-cli");
 const { sanitizeError } = require("@ignis/server-core");
 
 function mountRoutes(router, plugin) {

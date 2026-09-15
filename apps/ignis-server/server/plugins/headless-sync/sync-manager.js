@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
-const { spawnOb, runCommand } = require("./ob-cli");
+const { spawnOb, runCommand } = require("../../obsidian-account/ob-cli");
 
 const MAX_LOG_ENTRIES = 200;
 const MAX_LOG_LINE = 4096;

@@ -6,6 +6,10 @@ const https = require("https");
 const zlib = require("zlib");
 const settings = require("../settings");
 const { sanitizeError } = require("@ignis/server-core");
+const {
+  signinCredentials,
+  resolveSignin,
+} = require("../obsidian-account/signin");
 
 const router = express.Router();
 
@@ -409,6 +413,39 @@ function readBody(res, maxBytes) {
   });
 }
 
+async function relayOnce({ url, method, headers, body }) {
+  const upstream = await proxyRequest({ url, method, headers, body });
+  const declaredLength = Number(upstream.headers["content-length"]);
+
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+    upstream.destroy();
+    return { tooLarge: true };
+  }
+
+  const respBody = await readBody(upstream, MAX_RESPONSE_BYTES);
+
+  // Strip hop-by-hop and encoding headers; the body is already decompressed.
+  const skipHeaders = new Set([
+    "content-encoding",
+    "transfer-encoding",
+    "content-length",
+    "connection",
+  ]);
+  const respHeaders = {};
+
+  for (const [key, val] of Object.entries(upstream.headers)) {
+    if (!skipHeaders.has(key.toLowerCase())) {
+      respHeaders[key] = val;
+    }
+  }
+
+  return {
+    status: upstream.statusCode,
+    headers: respHeaders,
+    body: respBody.toString("base64"),
+  };
+}
+
 // POST /api/proxy - forward a request to an external URL to bypass CORS.
 router.post("/", async (req, res) => {
   const { url, method, headers, body, binary } = req.body;
@@ -453,45 +490,27 @@ router.post("/", async (req, res) => {
     const reqBody =
       binary && typeof body === "string" ? Buffer.from(body, "base64") : body;
 
-    const upstream = await proxyRequest({
+    const relayArgs = {
       url,
       method: method || "GET",
       headers: headers || {},
       body: reqBody,
-    });
+    };
 
-    const declaredLength = Number(upstream.headers["content-length"]);
+    const credentials = signinCredentials(req.body);
+    let relayed = await relayOnce(relayArgs);
 
-    if (
-      Number.isFinite(declaredLength) &&
-      declaredLength > MAX_RESPONSE_BYTES
-    ) {
-      upstream.destroy();
+    if (credentials) {
+      relayed = await resolveSignin(credentials, relayed, () =>
+        relayOnce(relayArgs),
+      );
+    }
+
+    if (relayed.tooLarge) {
       return res.status(413).json({ error: "Upstream response too large" });
     }
 
-    const respBody = await readBody(upstream, MAX_RESPONSE_BYTES);
-
-    // Strip hop-by-hop and encoding headers; the body is already decompressed.
-    const skipHeaders = new Set([
-      "content-encoding",
-      "transfer-encoding",
-      "content-length",
-      "connection",
-    ]);
-    const respHeaders = {};
-
-    for (const [key, val] of Object.entries(upstream.headers)) {
-      if (!skipHeaders.has(key.toLowerCase())) {
-        respHeaders[key] = val;
-      }
-    }
-
-    res.json({
-      status: upstream.statusCode,
-      headers: respHeaders,
-      body: respBody.toString("base64"),
-    });
+    res.json(relayed);
   } catch (e) {
     if (e.block) {
       // leak-allow

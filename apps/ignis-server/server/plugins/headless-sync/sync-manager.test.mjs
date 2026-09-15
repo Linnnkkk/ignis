@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 const spawned = [];
 let nextPid = 4000;
 
-const obCli = require("./ob-cli.js");
+const obCli = require("../../obsidian-account/ob-cli.js");
 
 obCli.runCommand = async () => ({ stdout: "", stderr: "" });
 

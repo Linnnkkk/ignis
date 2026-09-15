@@ -20,12 +20,21 @@ const {
   initPlugins,
   shutdownPlugins,
   getBundledPluginDirs,
+  getPluginDataDir,
 } = require("./plugin-system/manager");
+const obCli = require("./obsidian-account/ob-cli");
 const pluginRoutes = require("./routes/plugins");
+const { setupDemo, wireDemoWebSocket } = require("./demo");
+const { flushAll } = writeCoalescer;
+
 writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
 watcher.configure({ ignoredPaths: settings.resolveIgnoreLines() });
-const { flushAll } = writeCoalescer;
-const { setupDemo, wireDemoWebSocket } = require("./demo");
+obCli.init({
+  obHome: path.join(
+    getPluginDataDir(config.dataRoot, "headless-sync"),
+    "ob-home",
+  ),
+});
 
 const REPO_ROOT = path.join(__dirname, "..", "..", "..");
 
