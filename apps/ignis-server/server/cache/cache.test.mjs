@@ -442,3 +442,20 @@ describe("warm-up", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("bootstrap settings", () => {
+  it("carries the dev flags from config", async () => {
+    seed("a.md", "a");
+    config.devSuppressWriteFailures = true;
+    config.devForceReadingView = false;
+
+    try {
+      const entry = await bootstrapCache.getOrBuild(VAULT_ID);
+
+      expect(entry.response.settings.devSuppressWriteFailures).toBe(true);
+      expect(entry.response.settings.devForceReadingView).toBe(false);
+    } finally {
+      config.devSuppressWriteFailures = false;
+    }
+  });
+});

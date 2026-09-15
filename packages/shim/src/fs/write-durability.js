@@ -13,6 +13,7 @@ const MAX_ATTEMPTS = 8;
 
 let transport = null;
 let listenersBound = false;
+let silentByDefault = false;
 
 // Retries reuse the same per-path serializer as fresh writes, so a stale retry cannot clobber a newer write.
 let serialize = (path, run) => run();
@@ -29,6 +30,10 @@ let state = "clean";
 const stateSubs = new Set();
 const failureSubs = new Set();
 const failureChangeSubs = new Set();
+
+export function setSilentByDefault(on) {
+  silentByDefault = !!on;
+}
 
 export function initWriteDurability(t, serializeFn) {
   transport = t;
@@ -245,7 +250,7 @@ export function trackWrite(path, opts) {
   const entry = {
     gen,
     status: "inflight",
-    silent: !!(opts && opts.silent),
+    silent: silentByDefault || !!(opts && opts.silent),
     overThreshold: false,
     startTimer: null,
     retryTimer: null,
@@ -402,6 +407,7 @@ export function _reset() {
   entries.clear();
   state = "clean";
   genCounter = 0;
+  silentByDefault = false;
   serialize = (path, run) => run();
   stateSubs.clear();
   failureSubs.clear();

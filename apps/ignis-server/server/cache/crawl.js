@@ -133,6 +133,8 @@ function buildResponse(vaultId, vaultPath, tree, etag) {
       inputCacheBytes: settings.get("inputCacheBytes"),
       inputCacheTtlMs: settings.get("inputCacheTtlMs"),
       directFetchHosts: settings.get("directFetchHosts"),
+      devSuppressWriteFailures: config.devSuppressWriteFailures,
+      devForceReadingView: config.devForceReadingView,
     },
   };
 }

@@ -126,6 +126,9 @@ module.exports = {
   headlessSyncIdleRestartMs:
     parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
 
+  devSuppressWriteFailures: process.env.DEV_SUPPRESS_WRITE_FAILURES === "true",
+  devForceReadingView: process.env.DEV_FORCE_READING_VIEW === "true",
+
   obsidianAssetsPath:
     process.env.OBSIDIAN_ASSETS_PATH ||
     path.join(REPO_ROOT, "investigation", "obsidian_1.12.7_unpacked"),

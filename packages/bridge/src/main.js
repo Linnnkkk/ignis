@@ -18,6 +18,7 @@ import { initInsecureApiNotice } from "./insecure-api-notice.js";
 import { initProxyBlockNotice } from "./proxy-block-notice.js";
 import { initWriteGiveupNotice } from "./write-giveup-notice.js";
 import { initImageRetry } from "./image-retry.js";
+import { installReadingLock } from "./reading-lock.js";
 
 class IgnisBridgePlugin extends Plugin {
   async onload() {
@@ -36,8 +37,17 @@ class IgnisBridgePlugin extends Plugin {
     this._loadingGateUnsub = installLoadingGate();
     this._insecureApiUnsub = initInsecureApiNotice();
     this._proxyBlockUnsub = initProxyBlockNotice(this.app);
-    this._writeGiveupUnsub = initWriteGiveupNotice();
     this._imageRetryUnsub = initImageRetry();
+
+    const flags = window.__ignis.flags || {};
+
+    if (!flags.suppressWriteFailures) {
+      this._writeGiveupUnsub = initWriteGiveupNotice();
+    }
+
+    if (flags.forceReadingView) {
+      installReadingLock(this);
+    }
 
     this.addRibbonIcon("upload", "Upload file", () => {
       showFilePicker(this.app);
