@@ -1,5 +1,6 @@
 const express = require("express");
 const { writeCoalescer, watcher } = require("@ignis/server-core");
+const config = require("../config");
 const settings = require("../settings");
 const bootstrapCache = require("../cache");
 
@@ -12,7 +13,7 @@ const NUMBER_KEYS = [
   "writeCoalesceMs",
   "maxBodyBytes",
 ];
-const LIST_KEYS = ["proxyAllowlist", "directFetchHosts"];
+const LIST_KEYS = ["proxyAllowlist", "directFetchHosts", "trustedVaults"];
 
 function validate(body) {
   const clean = {};
@@ -68,6 +69,16 @@ function validate(body) {
     }
 
     clean[key] = list.map((v) => v.trim());
+  }
+
+  if (clean.trustedVaults !== undefined) {
+    for (const id of clean.trustedVaults) {
+      if (!config.getVaultPath(id)) {
+        throw new Error(`trustedVaults contains an unknown vault: ${id}`);
+      }
+    }
+
+    clean.trustedVaults = [...new Set(clean.trustedVaults)];
   }
 
   if (body.ignoreRules !== undefined) {

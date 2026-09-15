@@ -2,6 +2,7 @@ import { Setting, Notice, setIcon } from "obsidian";
 import { isDemoMode } from "../demo-guards.js";
 import { stripBuildMetadata, isNewer } from "../util/version.js";
 import { ListEditorModal } from "./list-editor-modal.js";
+import { createSettingGroup, saveSetting } from "./settings-ui.js";
 
 const GITHUB_URL = "https://github.com/Nystik-gh/ignis";
 const GITHUB_API_LATEST =
@@ -133,16 +134,6 @@ const STATUS_DOT_CLASSES = {
   closed: "ignis-status-disconnected",
 };
 
-function createSettingGroup(containerEl, heading) {
-  const group = containerEl.createDiv("setting-group");
-
-  if (heading) {
-    new Setting(group).setName(heading).setHeading();
-  }
-
-  return group.createDiv("setting-items");
-}
-
 function addServerStatus(containerEl) {
   const ws = window.__ignis.ws;
 
@@ -272,27 +263,6 @@ function renderServerSettings(containerEl, current, app) {
   });
 
   ignoreRulesField(advanced, current);
-}
-
-// Persist a single setting. The server validates, applies the live ones, and saves.
-async function saveSetting(partial) {
-  try {
-    const res = await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(partial),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || "Save failed");
-    }
-
-    return true;
-  } catch (e) {
-    new Notice(`Failed to save setting: ${e.message}`);
-    return false;
-  }
 }
 
 function numberField(containerEl, { name, desc, value, key, toStored }) {

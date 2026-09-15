@@ -1,9 +1,27 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll } from "vitest";
 import { createRequire } from "module";
+import path from "path";
+import fs from "fs";
+import os from "os";
 
 const require = createRequire(import.meta.url);
+
+const VAULT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "settings-validate-"));
+process.env.VAULT_ROOT = VAULT_ROOT;
+
+const VAULT_ID = "v";
+const OTHER_ID = "w";
+fs.mkdirSync(path.join(VAULT_ROOT, VAULT_ID), { recursive: true });
+fs.mkdirSync(path.join(VAULT_ROOT, OTHER_ID), { recursive: true });
+
 const { validate } = require("./settings.js");
 const settings = require("../settings.js");
+const config = require("../config.js");
+config.refreshVaults();
+
+afterAll(() => {
+  fs.rmSync(VAULT_ROOT, { recursive: true, force: true });
+});
 
 describe("settings validate", () => {
   it("rejects an unknown proxy mode", () => {
@@ -91,6 +109,26 @@ describe("settings validate", () => {
   it("rejects a non-array allowlist or an empty entry", () => {
     expect(() => validate({ proxyAllowlist: "x" })).toThrow();
     expect(() => validate({ proxyAllowlist: ["ok", "  "] })).toThrow();
+  });
+
+  it("rejects a trusted vault list that is not an array", () => {
+    expect(() => validate({ trustedVaults: VAULT_ID })).toThrow();
+  });
+
+  it("rejects a trusted vault list with an empty entry", () => {
+    expect(() => validate({ trustedVaults: [VAULT_ID, "  "] })).toThrow();
+  });
+
+  it("rejects a trusted vault id that resolves to no vault", () => {
+    expect(() => validate({ trustedVaults: [VAULT_ID, "ghost"] })).toThrow(
+      "trustedVaults contains an unknown vault: ghost",
+    );
+  });
+
+  it("de-duplicates a trusted vault list of existing vaults", () => {
+    expect(
+      validate({ trustedVaults: [` ${VAULT_ID} `, OTHER_ID, VAULT_ID] }),
+    ).toEqual({ trustedVaults: [VAULT_ID, OTHER_ID] });
   });
 
   it("ignores wsOrigins, which is env-only", () => {

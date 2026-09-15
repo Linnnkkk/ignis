@@ -260,6 +260,11 @@ export function initialize() {
 
   if (bootstrap) {
     applyVaultInfo(bootstrap.vault);
+
+    if (bootstrap.vault.trustPlugins) {
+      vaultService.setVaultTrust(bootstrap.vault.id);
+    }
+
     window.__vaultList = bootstrap.vaultList;
     autoTrustDemoVaults(bootstrap.vaultList);
     applyTree(bootstrap.tree);

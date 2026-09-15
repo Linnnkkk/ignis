@@ -108,6 +108,7 @@ function buildVaultInfo(vaultId, vaultPath) {
     path: vaultPath,
     platform: process.platform,
     version: config.obsidianVersion,
+    trustPlugins: settings.get("trustedVaults").includes(vaultId),
   };
 }
 
@@ -460,6 +461,7 @@ async function warmUp() {
 }
 
 module.exports = {
+  buildVaultInfo,
   walkTree,
   getOrBuild,
   reconcileVault,

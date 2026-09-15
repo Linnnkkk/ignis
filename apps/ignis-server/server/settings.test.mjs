@@ -91,3 +91,23 @@ describe("resolveIgnoreLines", () => {
     expect(reloaded.resolveIgnoreLines()).toEqual(["keep"]);
   });
 });
+
+describe("hand-edited settings file", () => {
+  it("drops a value whose type does not match the default", () => {
+    fs.mkdirSync(DATA_ROOT, { recursive: true });
+    fs.writeFileSync(
+      SETTINGS_FILE,
+      JSON.stringify({
+        trustedVaults: "vault-a",
+        proxyMode: 7,
+        directFetchHosts: ["kept.example"],
+      }),
+    );
+
+    const settings = loadSettings();
+
+    expect(settings.get("trustedVaults")).toEqual([]);
+    expect(settings.get("proxyMode")).toBe("any");
+    expect(settings.get("directFetchHosts")).toEqual(["kept.example"]);
+  });
+});

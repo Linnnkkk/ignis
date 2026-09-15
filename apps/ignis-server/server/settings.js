@@ -27,6 +27,7 @@ const DEFAULTS = {
       patterns: [".git", ".trash", "node_modules", "@eaDir", "#recycle"],
     },
   ],
+  trustedVaults: [],
 };
 
 const PROXY_MODES = ["any", "allowlist", "disabled"];
@@ -77,6 +78,14 @@ const envIgnoreLines = process.env.IGNORED_PATHS
   ? parseList(process.env.IGNORED_PATHS)
   : [];
 
+function hasShapeOf(reference, value) {
+  if (Array.isArray(reference)) {
+    return Array.isArray(value);
+  }
+
+  return typeof value === typeof reference;
+}
+
 function loadFile() {
   try {
     const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
@@ -88,7 +97,7 @@ function loadFile() {
         continue;
       }
 
-      if (parsed[key] !== undefined) {
+      if (parsed[key] !== undefined && hasShapeOf(DEFAULTS[key], parsed[key])) {
         clean[key] = parsed[key];
       }
     }

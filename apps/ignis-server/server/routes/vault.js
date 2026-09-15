@@ -3,6 +3,7 @@ const fs = require("fs");
 const config = require("../config");
 const path = require("path");
 const bootstrapCache = require("../cache");
+const settings = require("../settings");
 const treeReconcile = require("../cache/reconcile");
 const { withWatcherStopped } = require("../vault-lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
@@ -50,13 +51,7 @@ router.get("/info", async (req, res) => {
     return res.status(404).json({ error: "Vault not found", id: vaultId });
   }
 
-  res.json({
-    id: vaultId,
-    name: vaultId,
-    path: vaultPath,
-    platform: process.platform,
-    version: config.obsidianVersion,
-  });
+  res.json(bootstrapCache.buildVaultInfo(vaultId, vaultPath));
 });
 
 // POST /api/vault/refresh { vault } - reconcile the whole vault against disk, including ignored paths
@@ -143,6 +138,17 @@ router.post("/rename", async (req, res) => {
     );
 
     config.refreshVaults();
+
+    const trustedVaults = settings.get("trustedVaults");
+
+    if (trustedVaults.includes(vaultId)) {
+      settings.update({
+        trustedVaults: trustedVaults.map((id) =>
+          id === vaultId ? newName : id,
+        ),
+      });
+    }
+
     treeReconcile.cancelVault(vaultId);
     bootstrapCache.invalidateVault(vaultId);
     bootstrapCache.invalidateVault(newName);
@@ -174,6 +180,15 @@ router.delete("/remove", async (req, res) => {
     );
 
     config.refreshVaults();
+
+    const trustedVaults = settings.get("trustedVaults");
+
+    if (trustedVaults.includes(vaultId)) {
+      settings.update({
+        trustedVaults: trustedVaults.filter((id) => id !== vaultId),
+      });
+    }
+
     treeReconcile.cancelVault(vaultId);
     bootstrapCache.invalidateVault(vaultId);
 

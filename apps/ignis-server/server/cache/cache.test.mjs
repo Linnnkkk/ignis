@@ -15,7 +15,9 @@ import os from "os";
 const require = createRequire(import.meta.url);
 
 const VAULT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "cache-test-"));
+const DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), "cache-test-data-"));
 process.env.VAULT_ROOT = VAULT_ROOT;
+process.env.DATA_ROOT = DATA_ROOT;
 
 const VAULT_ID = "v";
 const OTHER_ID = "w";
@@ -26,6 +28,7 @@ fs.mkdirSync(otherDir, { recursive: true });
 
 const config = require("../config");
 config.refreshVaults();
+const settings = require("../settings");
 const bootstrapCache = require("./index");
 const { watcher } = require("@ignis/server-core");
 
@@ -77,6 +80,7 @@ afterEach(async () => {
 
 afterAll(() => {
   fs.rmSync(VAULT_ROOT, { recursive: true, force: true });
+  fs.rmSync(DATA_ROOT, { recursive: true, force: true });
 });
 
 describe("watched and unwatched serving modes", () => {
@@ -456,6 +460,34 @@ describe("bootstrap settings", () => {
       expect(entry.response.settings.devForceReadingView).toBe(false);
     } finally {
       config.devSuppressWriteFailures = false;
+    }
+  });
+});
+
+describe("vault plugin trust", () => {
+  it("trusts a vault the trusted list names", async () => {
+    seed("a.md", "a");
+    settings.update({ trustedVaults: [VAULT_ID] });
+
+    try {
+      const entry = await bootstrapCache.getOrBuild(VAULT_ID);
+
+      expect(entry.response.vault.trustPlugins).toBe(true);
+    } finally {
+      settings.update({ trustedVaults: [] });
+    }
+  });
+
+  it("leaves a vault the trusted list omits untrusted", async () => {
+    seed("a.md", "a");
+    settings.update({ trustedVaults: [OTHER_ID] });
+
+    try {
+      const entry = await bootstrapCache.getOrBuild(VAULT_ID);
+
+      expect(entry.response.vault.trustPlugins).toBe(false);
+    } finally {
+      settings.update({ trustedVaults: [] });
     }
   });
 });

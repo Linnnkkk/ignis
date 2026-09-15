@@ -1,4 +1,10 @@
-const { walkTree, getOrBuild, reconcileVault, warmUp } = require("./crawl");
+const {
+  buildVaultInfo,
+  walkTree,
+  getOrBuild,
+  reconcileVault,
+  warmUp,
+} = require("./crawl");
 const { applyMutation } = require("./apply");
 const { getOrCompress } = require("./compress");
 const {
@@ -15,6 +21,7 @@ const {
 const { ignoreSuggestions } = require("./ignore-suggestions");
 
 module.exports = {
+  buildVaultInfo,
   walkTree,
   getOrBuild,
   reconcileVault,

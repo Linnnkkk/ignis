@@ -40,7 +40,7 @@ function display(containerEl, app) {
     text:
       "Ignis plugins extend server functionality and run alongside your vaults. " +
       "They are separate from Obsidian's built-in plugins.",
-    cls: "ignis-plugins-description",
+    cls: "ignis-tab-description",
   });
 
   const loadingEl = containerEl.createEl("p", { text: "Loading plugins..." });

@@ -48,7 +48,7 @@ export const vaultService = {
       body: JSON.stringify({ name }),
     });
 
-    this._setVaultTrust(name);
+    this.setVaultTrust(name);
 
     return this.listVaults();
   },
@@ -131,7 +131,7 @@ export const vaultService = {
     target.location.href = "/?vault=" + encodeURIComponent(id);
   },
 
-  _setVaultTrust(vaultId, trusted = true) {
+  setVaultTrust(vaultId, trusted = true) {
     localStorage.setItem("enable-plugin-" + vaultId, String(trusted));
   },
 
