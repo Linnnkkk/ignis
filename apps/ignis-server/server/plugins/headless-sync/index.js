@@ -54,6 +54,7 @@ module.exports = {
 
     // Auto-start syncs that were running before shutdown
     if (this._obStatus.installed && auth.isAuthenticated(ctx.dataDir)) {
+      await this._syncManager.applyPendingConfigs();
       this._syncManager.autoStartAll();
     }
 

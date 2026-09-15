@@ -2,21 +2,89 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const { spawnOb, runCommand } = require("../../obsidian-account/ob-cli");
+const {
+  SYNC_MODES,
+  FILE_TYPES,
+  CONFIG_CATEGORIES,
+  keysOf,
+} = require("./sync-options");
 
-const MAX_LOG_ENTRIES = 200;
+const MAX_LOG_ENTRIES = 2000;
 const MAX_LOG_LINE = 4096;
 const IDLE_CHECK_DIVISOR = 4;
 const MIN_IDLE_CHECK_MS = 1000;
+const PROCESS_EXIT_WAIT_MS = 5000;
 
-function killProcess(proc) {
-  if (!proc) {
-    return;
+const SYNC_MODE_KEYS = keysOf(SYNC_MODES);
+const FILE_TYPE_KEYS = keysOf(FILE_TYPES);
+const CONFIG_CATEGORY_KEYS = keysOf(CONFIG_CATEGORIES);
+
+function invalidConfigReason(config) {
+  if (!Array.isArray(config.fileTypes)) {
+    return "fileTypes must be an array";
   }
 
+  if (!Array.isArray(config.configs)) {
+    return "configs must be an array";
+  }
+
+  if (!Array.isArray(config.excludedFolders)) {
+    return "excludedFolders must be an array";
+  }
+
+  for (const fileType of config.fileTypes) {
+    if (!FILE_TYPE_KEYS.includes(fileType)) {
+      return `Unknown file type: ${fileType}`;
+    }
+  }
+
+  for (const category of config.configs) {
+    if (!CONFIG_CATEGORY_KEYS.includes(category)) {
+      return `Unknown config category: ${category}`;
+    }
+  }
+
+  if (!SYNC_MODE_KEYS.includes(config.mode)) {
+    return `Unknown sync mode: ${config.mode}`;
+  }
+
+  return null;
+}
+
+function persistedConfig(state) {
+  if (!state._needsConfigApply) {
+    return state.config;
+  }
+
+  return {
+    mode: state.config.mode,
+    deviceName: state.config.deviceName,
+  };
+}
+
+function waitForClose(proc, timeoutMs) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+
+    proc.once("close", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+function removeSyncLock(vaultPath) {
+  fs.rmSync(path.join(vaultPath, ".obsidian", ".sync.lock"), {
+    recursive: true,
+    force: true,
+  });
+}
+
+function killProcess(proc, signal) {
   if (process.platform === "win32") {
     spawn("taskkill", ["/pid", String(proc.pid), "/t", "/f"]);
   } else {
-    proc.kill("SIGTERM");
+    proc.kill(signal);
   }
 }
 
@@ -41,6 +109,8 @@ class SyncManager {
           continue;
         }
 
+        const savedConfig = entry.config || {};
+
         this.states.set(entry.vaultId, {
           vaultId: entry.vaultId,
           vaultPath,
@@ -50,13 +120,17 @@ class SyncManager {
           pid: null,
           lastActivity: new Date().toISOString(),
           error: null,
-          config: entry.config || {
-            mode: "bidirectional",
-            deviceName: "ignis-headless",
+          config: {
+            mode: savedConfig.mode || "bidirectional",
+            deviceName: savedConfig.deviceName || "ignis-headless",
+            fileTypes: savedConfig.fileTypes || [...FILE_TYPE_KEYS],
+            configs: savedConfig.configs || [...CONFIG_CATEGORY_KEYS],
+            excludedFolders: savedConfig.excludedFolders || [],
           },
           autoStart: entry.autoStart || false,
           logs: [],
           _process: null,
+          _needsConfigApply: !savedConfig.fileTypes,
         });
       }
 
@@ -75,7 +149,7 @@ class SyncManager {
         vaultPath: state.vaultPath,
         remoteVault: state.remoteVault,
         remoteVaultName: state.remoteVaultName,
-        config: state.config,
+        config: persistedConfig(state),
         autoStart: state.autoStart,
       });
     }
@@ -108,20 +182,123 @@ class SyncManager {
       config: {
         mode: options.mode || "bidirectional",
         deviceName: options.deviceName || "ignis-headless",
+        fileTypes: [...FILE_TYPE_KEYS],
+        configs: [...CONFIG_CATEGORY_KEYS],
+        excludedFolders: [],
       },
       autoStart: false,
       logs: [],
       _process: null,
+      _needsConfigApply: true,
     };
 
     this.states.set(vaultId, state);
+
+    try {
+      await this.applySyncConfig(vaultId, state.config);
+      state._needsConfigApply = false;
+    } catch (e) {
+      this.ctx.log(`Failed to apply sync config for ${vaultId}: ${e.message}`);
+    }
+
     this.saveStates();
     this.ctx.log(`Sync setup complete for ${vaultId} -> ${remoteVault}`);
 
     return this.getState(vaultId);
   }
 
-  startSync(vaultId) {
+  async applySyncConfig(vaultId, config) {
+    const state = this.states.get(vaultId);
+
+    if (!state) {
+      throw new Error(`No sync configuration for vault: ${vaultId}`);
+    }
+
+    await runCommand(
+      [
+        "sync-config",
+        "--path",
+        ".",
+        "--file-types",
+        config.fileTypes.join(","),
+        "--configs",
+        config.configs.join(","),
+        "--excluded-folders",
+        config.excludedFolders.join(","),
+        "--mode",
+        config.mode,
+      ],
+      { cwd: state.vaultPath },
+    );
+  }
+
+  async applyPendingConfigs() {
+    let pendingVaults = 0;
+
+    for (const [vaultId, state] of this.states) {
+      if (!state._needsConfigApply) {
+        continue;
+      }
+
+      pendingVaults++;
+
+      try {
+        await this.applySyncConfig(vaultId, state.config);
+        state._needsConfigApply = false;
+      } catch (e) {
+        this.ctx.log(
+          `Failed to apply sync config for ${vaultId}: ${e.message}`,
+        );
+      }
+    }
+
+    if (pendingVaults > 0) {
+      this.saveStates();
+    }
+  }
+
+  async configureSync(vaultId, config) {
+    const state = this.states.get(vaultId);
+
+    if (!state) {
+      throw new Error(`No sync configuration for vault: ${vaultId}`);
+    }
+
+    const reason = invalidConfigReason(config);
+
+    if (reason) {
+      throw new Error(reason);
+    }
+
+    const nextConfig = {
+      ...state.config,
+      mode: config.mode,
+      fileTypes: [...config.fileTypes],
+      configs: [...config.configs],
+      excludedFolders: [...config.excludedFolders],
+    };
+
+    await this.applySyncConfig(vaultId, nextConfig);
+
+    state.config = nextConfig;
+    state._needsConfigApply = false;
+
+    const restarted = state.status === "running";
+
+    if (restarted) {
+      this.addLog(state, "Restarting sync to pick up the new configuration");
+      await this.stopProcess(state);
+      this.spawnProcess(state);
+      this.broadcaster.broadcastStatus(this.getState(vaultId));
+      this.ctx.log(`Restarted sync for ${vaultId} (pid: ${state.pid})`);
+    }
+
+    this.saveStates();
+
+    return { state: this.getState(vaultId), restarted };
+  }
+
+  async startSync(vaultId) {
     const state = this.states.get(vaultId);
 
     if (!state) {
@@ -131,7 +308,7 @@ class SyncManager {
     if (state.status === "running") {
       this.ctx.log(`Taking over sync for ${vaultId} (pid: ${state.pid})`);
       this.addLog(state, `Replacing sync process ${state.pid}`);
-      this.stopProcess(state);
+      await this.stopProcess(state);
     }
 
     this.spawnProcess(state);
@@ -145,15 +322,7 @@ class SyncManager {
 
   spawnProcess(state) {
     const vaultId = state.vaultId;
-    const args = ["sync", "--continuous"];
-
-    if (state.config.mode === "pull-only") {
-      args.push("--pull-only");
-    } else if (state.config.mode === "mirror-remote") {
-      args.push("--mirror-remote");
-    }
-
-    const proc = spawnOb(args, { cwd: state.vaultPath });
+    const proc = spawnOb(["sync", "--continuous"], { cwd: state.vaultPath });
 
     state.status = "running";
     state.pid = proc.pid;
@@ -239,10 +408,28 @@ class SyncManager {
     });
   }
 
-  stopProcess(state) {
+  async stopProcess(state) {
     this.clearIdleRestartTimer(state);
-    killProcess(state._process);
+
+    const proc = state._process;
+
     state._process = null;
+
+    if (!proc) {
+      return;
+    }
+
+    let closed = waitForClose(proc, PROCESS_EXIT_WAIT_MS);
+
+    killProcess(proc, "SIGTERM");
+
+    if (!(await closed)) {
+      closed = waitForClose(proc, PROCESS_EXIT_WAIT_MS);
+      killProcess(proc, "SIGKILL");
+      await closed;
+    }
+
+    removeSyncLock(state.vaultPath);
   }
 
   stopSync(vaultId) {
@@ -282,7 +469,7 @@ class SyncManager {
 
     if (state._process) {
       state._userStopped = true;
-      killProcess(state._process);
+      await this.stopProcess(state);
     }
 
     // Tell ob to disconnect from the remote vault and clear its stored config
@@ -359,7 +546,7 @@ class SyncManager {
       Math.floor(this.idleRestartMs / IDLE_CHECK_DIVISOR),
     );
 
-    const timer = setInterval(() => {
+    const timer = setInterval(async () => {
       if (!state._process) {
         return;
       }
@@ -375,7 +562,7 @@ class SyncManager {
           `No activity for ${this.idleRestartMs}ms, restarting sync (HEADLESS_SYNC_IDLE_RESTART_MS)`,
         );
 
-        this.stopProcess(state);
+        await this.stopProcess(state);
         this.spawnProcess(state);
         this.broadcaster.broadcastStatus(this.getState(state.vaultId));
       }
@@ -400,12 +587,10 @@ class SyncManager {
 
     for (const [vaultId, state] of this.states) {
       if (state.autoStart && state.status === "stopped") {
-        try {
-          this.startSync(vaultId);
-          started++;
-        } catch (e) {
+        this.startSync(vaultId).catch((e) => {
           this.ctx.log(`Auto-start failed for ${vaultId}: ${e.message}`);
-        }
+        });
+        started++;
       }
     }
 
@@ -428,19 +613,10 @@ class SyncManager {
 
         const proc = state._process;
 
-        waitPromises.push(
-          new Promise((resolve) => {
-            const timeout = setTimeout(resolve, 5000);
-
-            proc.on("close", () => {
-              clearTimeout(timeout);
-              resolve();
-            });
-          }),
-        );
+        waitPromises.push(waitForClose(proc, PROCESS_EXIT_WAIT_MS));
 
         try {
-          killProcess(proc);
+          killProcess(proc, "SIGTERM");
         } catch (e) {
           this.ctx.log(`Error stopping sync for ${vaultId}: ${e.message}`);
         }
@@ -455,4 +631,4 @@ class SyncManager {
   }
 }
 
-module.exports = { SyncManager };
+module.exports = { SyncManager, invalidConfigReason };

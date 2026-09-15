@@ -8,6 +8,7 @@ const BAD_CREDENTIALS_TEXT = "double check your email and password";
 const OVERLOAD_TEXT = "Unexpected token";
 
 let obHome = null;
+let cliJs = null;
 
 function init(opts) {
   obHome = opts && opts.obHome ? opts.obHome : null;
@@ -62,13 +63,35 @@ function checkInstalled() {
   }
 }
 
+function obCliJs() {
+  if (!cliJs) {
+    const globalModules = execSync("npm root -g", {
+      stdio: "pipe",
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+
+    cliJs = path.join(globalModules, "obsidian-headless", "cli.js");
+  }
+
+  return cliJs;
+}
+
 function spawnOb(args, opts = {}) {
-  return spawn("ob", args, {
+  const spawnOpts = {
     env: obEnv(getObHome()),
     shell: false,
     windowsHide: true,
     ...opts,
-  });
+  };
+
+  // windows shell fix
+  if (process.platform === "win32") {
+    return spawn(process.execPath, [obCliJs(), ...args], spawnOpts);
+  }
+
+  return spawn("ob", args, spawnOpts);
 }
 
 function runCommand(args, opts = {}) {

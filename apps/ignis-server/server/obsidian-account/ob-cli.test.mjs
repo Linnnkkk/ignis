@@ -47,9 +47,26 @@ function createStdin() {
   };
 }
 
+function obArgs(command, args) {
+  if (command === "ob") {
+    return args;
+  }
+
+  if (
+    command === process.execPath &&
+    /obsidian-headless[\\/]cli\.js$/.test(args[0])
+  ) {
+    return args.slice(1);
+  }
+
+  return null;
+}
+
 // mock ob cli
 childProcess.spawn = (command, args, opts) => {
-  if (command !== "ob") {
+  const runArgs = obArgs(command, args);
+
+  if (!runArgs) {
     return realSpawn(command, args, opts);
   }
 
@@ -64,7 +81,7 @@ childProcess.spawn = (command, args, opts) => {
   };
 
   obRuns.push({
-    args,
+    args: runArgs,
     opts,
     proc,
     tokenInHome: fs.existsSync(authTokenFileIn(opts.env.HOME)),

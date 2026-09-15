@@ -1,5 +1,6 @@
 const auth = require("./auth");
 const obCli = require("../../obsidian-account/ob-cli");
+const { invalidConfigReason } = require("./sync-manager");
 const { sanitizeError } = require("@ignis/server-core");
 
 function mountRoutes(router, plugin) {
@@ -83,7 +84,40 @@ function mountRoutes(router, plugin) {
     }
   });
 
-  router.post("/start", (req, res) => {
+  router.post("/config", async (req, res) => {
+    const ctx = plugin.getCtx();
+    const syncManager = plugin.getSyncManager();
+    const { vaultId, fileTypes, configs, excludedFolders, mode } = req.body;
+
+    if (!vaultId) {
+      return res.status(400).json({ error: "vaultId is required" });
+    }
+
+    const config = { fileTypes, configs, excludedFolders, mode };
+    const reason = invalidConfigReason(config);
+
+    if (reason) {
+      return res.status(400).json({ error: reason });
+    }
+
+    if (!syncManager.getState(vaultId)) {
+      return res.status(404).json({ error: "Vault is not linked to sync" });
+    }
+
+    try {
+      const { state, restarted } = await syncManager.configureSync(
+        vaultId,
+        config,
+      );
+
+      res.json({ success: true, state, restarted });
+    } catch (e) {
+      ctx.log(`Failed to configure sync: ${e.message}`);
+      res.status(500).json(sanitizeError(e));
+    }
+  });
+
+  router.post("/start", async (req, res) => {
     const ctx = plugin.getCtx();
     const syncManager = plugin.getSyncManager();
     const { vaultId } = req.body;
@@ -93,7 +127,7 @@ function mountRoutes(router, plugin) {
     }
 
     try {
-      const state = syncManager.startSync(vaultId);
+      const state = await syncManager.startSync(vaultId);
       res.json({ success: true, state });
     } catch (e) {
       ctx.log(`Failed to start sync: ${e.message}`);
