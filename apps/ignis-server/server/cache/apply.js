@@ -2,9 +2,8 @@ const fs = require("fs");
 const fsp = fs.promises;
 const config = require("../config");
 const { cache, applyQueues, activeCrawls, nextEtag } = require("./state");
+const { toVaultRel, fromVaultRel } = require("@ignis/server-core");
 const {
-  normalizeRel,
-  absOf,
   statFileNode,
   isRepresentable,
   setNode,
@@ -92,7 +91,7 @@ function isCrawling(vaultId) {
 }
 
 async function resolveEvent(vaultPath, event) {
-  const relPath = normalizeRel(event.path);
+  const relPath = toVaultRel(event.path);
 
   if (!isRepresentable(relPath)) {
     return null;
@@ -108,7 +107,7 @@ async function resolveEvent(vaultPath, event) {
             mtime: event.stat.mtime,
             ctime: event.stat.ctime,
           }
-        : await statFileNode(absOf(vaultPath, relPath));
+        : await statFileNode(fromVaultRel(vaultPath, relPath));
 
       return { type: event.type, path: relPath, node };
     }
@@ -118,7 +117,9 @@ async function resolveEvent(vaultPath, event) {
         return { type: event.type, path: relPath, mtime: event.stat.mtime };
       }
 
-      const s = await fsp.stat(absOf(vaultPath, relPath)).catch(() => null);
+      const s = await fsp
+        .stat(fromVaultRel(vaultPath, relPath))
+        .catch(() => null);
 
       return s ? { type: event.type, path: relPath, mtime: s.mtimeMs } : null;
     }
@@ -127,7 +128,7 @@ async function resolveEvent(vaultPath, event) {
       return { type: event.type, path: relPath };
 
     case "rename": {
-      const toPath = normalizeRel(event.toPath);
+      const toPath = toVaultRel(event.toPath);
 
       return isRepresentable(toPath)
         ? { type: event.type, path: relPath, toPath }

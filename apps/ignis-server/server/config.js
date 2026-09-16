@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const { toVaultRel } = require("@ignis/server-core");
 
 const REPO_ROOT = path.join(__dirname, "..", "..", "..");
 
@@ -101,7 +102,7 @@ module.exports = {
       if (target === base || target.startsWith(base + path.sep)) {
         return {
           vaultId,
-          relPath: path.relative(base, target).split(path.sep).join("/"),
+          relPath: toVaultRel(path.relative(base, target)),
         };
       }
     }

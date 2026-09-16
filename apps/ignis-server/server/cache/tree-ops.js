@@ -1,19 +1,6 @@
 const fs = require("fs");
 const fsp = fs.promises;
-const path = require("path");
-
-function normalizeRel(p) {
-  return String(p == null ? "" : p)
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/^\/+|\/+$/g, "");
-}
-
-function absOf(vaultPath, relPath) {
-  return relPath
-    ? path.join(vaultPath, relPath.split("/").join(path.sep))
-    : vaultPath;
-}
+const { fromVaultRel } = require("@ignis/server-core");
 
 function fileNode(s) {
   return {
@@ -80,7 +67,7 @@ async function addMissingParentDirs(vaultPath, entry, relPath) {
     // never refresh recorded directory mtimes, ensure dir mtime only mutated by external changes
     if (!(ancestor in entry.dirMtimes)) {
       entry.dirMtimes[ancestor] = await statDirMtime(
-        absOf(vaultPath, ancestor),
+        fromVaultRel(vaultPath, ancestor),
       );
       changed = true;
     }
@@ -143,7 +130,7 @@ async function movePath(vaultPath, entry, from, to) {
   const movedDirs = subtreeKeys(entry.dirMtimes, from);
 
   if (moved.length === 0 && movedDirs.length === 0) {
-    const s = await fsp.stat(absOf(vaultPath, to));
+    const s = await fsp.stat(fromVaultRel(vaultPath, to));
 
     if (s.isDirectory()) {
       throw new Error(`rename of an unrecorded directory: ${from}`);
@@ -173,8 +160,6 @@ async function movePath(vaultPath, entry, from, to) {
 }
 
 module.exports = {
-  normalizeRel,
-  absOf,
   fileNode,
   statFileNode,
   statDirMtime,

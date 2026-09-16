@@ -1,6 +1,7 @@
 const chokidar = require("chokidar");
 const path = require("path");
 const ignore = require("ignore");
+const { toVaultRel } = require("./path-utils");
 
 const DEFAULT_IGNORED_PATHS = [".git"];
 
@@ -31,10 +32,7 @@ function configure(opts) {
 }
 
 function isIgnoredPath(p) {
-  const rel = String(p == null ? "" : p)
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "")
-    .replace(/^\/+|\/+$/g, "");
+  const rel = toVaultRel(p);
 
   if (rel === "") {
     return false;
@@ -142,7 +140,7 @@ function startWatching(vaultId, vaultPath) {
   };
 
   function emit(type, fullPath, stat) {
-    const rel = path.relative(vaultPath, fullPath).replace(/\\/g, "/");
+    const rel = toVaultRel(path.relative(vaultPath, fullPath));
 
     const event = { type, path: rel };
 

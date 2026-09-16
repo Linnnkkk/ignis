@@ -8,7 +8,12 @@ const {
 } = require("../plugin-system/manager");
 const { getVersion } = require("../version");
 const settings = require("../settings");
-const { watcher, writeCoalescer } = require("@ignis/server-core");
+const {
+  watcher,
+  writeCoalescer,
+  toVaultRel,
+  fromVaultRel,
+} = require("@ignis/server-core");
 const { getPending, pendingPaths } = writeCoalescer;
 const {
   cache,
@@ -20,7 +25,7 @@ const {
   notifyEntrySwapped,
   notifyStaleEntryServed,
 } = require("./state");
-const { absOf, fileNode } = require("./tree-ops");
+const { fileNode } = require("./tree-ops");
 const { getOrCompress, markCompressionStale } = require("./compress");
 const {
   enqueue,
@@ -143,7 +148,7 @@ function buildResponse(vaultId, vaultPath, tree, etag) {
 async function dirMtimesUnchanged(vaultPath, dirMtimes) {
   const checks = await Promise.all(
     Object.entries(dirMtimes).map(async ([relDir, oldMtime]) => {
-      const absDir = absOf(vaultPath, relDir);
+      const absDir = fromVaultRel(vaultPath, relDir);
 
       try {
         const s = await fsp.stat(absDir);
@@ -248,7 +253,7 @@ function pendingRelPaths(vaultPath) {
   const relPaths = new Set();
 
   for (const absPath of pendingPaths()) {
-    const relPath = path.relative(vaultPath, absPath).split(path.sep).join("/");
+    const relPath = toVaultRel(path.relative(vaultPath, absPath));
 
     if (relPath && relPath !== ".." && !relPath.startsWith("../")) {
       relPaths.add(relPath);

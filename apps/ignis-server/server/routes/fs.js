@@ -8,6 +8,7 @@ const {
   watcher,
   encodeContentDispositionFilename,
   resolveVaultPath,
+  toVaultRel,
   sanitizeError,
 } = require("@ignis/server-core");
 const {
@@ -37,7 +38,7 @@ function getVaultRoot(req, res) {
 }
 
 function toRelative(vaultRoot, resolved) {
-  return path.relative(vaultRoot, resolved).split(path.sep).join("/");
+  return toVaultRel(path.relative(vaultRoot, resolved));
 }
 
 function isApplicable(event) {
