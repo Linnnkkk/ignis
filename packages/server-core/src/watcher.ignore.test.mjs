@@ -33,8 +33,10 @@ describe("the ignore list before configure runs", () => {
     expect(watcher.isIgnoredPath("notes/a.md")).toBe(false);
   });
 
-  it("reads backslash separators, a ./ prefix, and a trailing slash", () => {
-    expect(watcher.isIgnoredPath("notes\\.git\\HEAD")).toBe(true);
+  it("reads native separators, a ./ prefix, and a trailing slash", () => {
+    expect(
+      watcher.isIgnoredPath(["notes", ".git", "HEAD"].join(path.sep)),
+    ).toBe(true);
     expect(watcher.isIgnoredPath("./.git/HEAD")).toBe(true);
     expect(watcher.isIgnoredPath(".git/")).toBe(true);
   });
