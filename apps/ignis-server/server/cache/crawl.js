@@ -14,7 +14,7 @@ const {
   toVaultRel,
   fromVaultRel,
 } = require("@ignis/server-core");
-const { getPending, pendingPaths } = writeCoalescer;
+const { getPending, pendingPaths, estimateSize } = writeCoalescer;
 const {
   cache,
   pendingBuilds,
@@ -63,9 +63,7 @@ async function walkTree(rootPath) {
 
           if (buffered) {
             const s = await fsp.stat(full).catch(() => null);
-            const size = Buffer.isBuffer(buffered.data)
-              ? buffered.data.length
-              : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
+            const size = estimateSize(buffered.data, buffered.encoding);
 
             tree[relPath] = {
               type: "file",

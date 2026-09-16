@@ -134,6 +134,44 @@ describe("getPending", () => {
   });
 });
 
+describe("estimateSize", () => {
+  it("sizes a binary-encoded string as its utf-8 byte length, the value that flushes to disk", () => {
+    const s = "ab" + String.fromCodePoint(0x00e9);
+
+    expect(coalescer.estimateSize(s, "binary")).toBe(
+      Buffer.byteLength(s, "utf-8"),
+    );
+    expect(coalescer.estimateSize(s, "binary")).not.toBe(
+      Buffer.byteLength(s, "latin1"),
+    );
+  });
+
+  it("sizes a buffer by its byte length, ignoring the encoding", () => {
+    const buf = Buffer.from([1, 2, 3, 4, 5]);
+
+    expect(coalescer.estimateSize(buf, "binary")).toBe(5);
+  });
+});
+
+describe("pendingBuffer", () => {
+  it("decodes a binary-encoded string as utf-8, the bytes that flush to disk", () => {
+    const s = "ab" + String.fromCodePoint(0x00e9);
+
+    expect(coalescer.pendingBuffer(s, "binary")).toEqual(
+      Buffer.from(s, "utf-8"),
+    );
+    expect(coalescer.pendingBuffer(s, "binary")).not.toEqual(
+      Buffer.from(s, "latin1"),
+    );
+  });
+
+  it("returns a buffer as is", () => {
+    const buf = Buffer.from([1, 2, 3]);
+
+    expect(coalescer.pendingBuffer(buf, "binary")).toBe(buf);
+  });
+});
+
 describe("flushAll", () => {
   it("drains all buffered writes to disk and clears pending state", async () => {
     const fileA = path.join(tmpDir, "a.txt");
@@ -175,7 +213,9 @@ describe("cancelPending", () => {
   });
 
   it("returns false when nothing is pending for the path", () => {
-    expect(coalescer.cancelPending(path.join(tmpDir, "absent.txt"))).toBe(false);
+    expect(coalescer.cancelPending(path.join(tmpDir, "absent.txt"))).toBe(
+      false,
+    );
   });
 });
 

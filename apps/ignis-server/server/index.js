@@ -141,9 +141,7 @@ app.use("/vault-files", (req, res, next) => {
 
   // Serve buffered content if exists.
   if (buffered) {
-    const body = Buffer.isBuffer(buffered.data)
-      ? buffered.data
-      : Buffer.from(buffered.data, buffered.encoding || "utf-8");
+    const body = writeCoalescer.pendingBuffer(buffered.data, buffered.encoding);
 
     const ext = path.extname(resolved);
 

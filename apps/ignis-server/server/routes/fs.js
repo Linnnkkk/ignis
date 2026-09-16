@@ -14,6 +14,8 @@ const {
 const {
   writeCoalesced,
   getPending,
+  estimateSize,
+  pendingBuffer,
   cancelPending,
   flushPending,
   cancelPendingSubtree,
@@ -152,9 +154,7 @@ router.get("/stat", async (req, res) => {
 
     if (buffered) {
       const diskStat = await fs.promises.stat(resolved).catch(() => null);
-      const size = Buffer.isBuffer(buffered.data)
-        ? buffered.data.length
-        : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
+      const size = estimateSize(buffered.data, buffered.encoding);
 
       res.json({
         type: "file",
@@ -612,9 +612,7 @@ router.get("/download", async (req, res) => {
     const buffered = getPending(resolved);
 
     if (buffered) {
-      const body = Buffer.isBuffer(buffered.data)
-        ? buffered.data
-        : Buffer.from(buffered.data, buffered.encoding || "utf-8");
+      const body = pendingBuffer(buffered.data, buffered.encoding);
 
       res.setHeader(
         "Content-Disposition",

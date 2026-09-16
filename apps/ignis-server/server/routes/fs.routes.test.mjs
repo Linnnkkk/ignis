@@ -158,6 +158,21 @@ describe("fs route handlers reconcile the coalescer buffer (WRITE_COALESCE_MS > 
     expect(body).toBe("v2download");
   });
 
+  it("download serves a pending binary-encoded string as the utf-8 bytes that flush to disk", async () => {
+    const p = abs("bin.md");
+    const s = "ab" + String.fromCodePoint(0x00e9);
+
+    await writeCoalescer.writeCoalesced(p, "v1", "utf-8");
+    await writeCoalescer.writeCoalesced(p, s, "binary");
+    expect(writeCoalescer.getPending(p)).not.toBeNull();
+
+    const body = Buffer.from(
+      await (await fetch(u(`download?${q("bin.md")}`))).arrayBuffer(),
+    );
+
+    expect(body).toEqual(Buffer.from(s, "utf-8"));
+  });
+
   it("tree reports the buffered size, not stale disk", async () => {
     await bufferWrite("x.md", "v1", "v2tree");
 

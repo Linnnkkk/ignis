@@ -170,6 +170,14 @@ function estimateSize(data, encoding) {
   return data.length || data.byteLength || 0;
 }
 
+function pendingBuffer(data, encoding) {
+  if (typeof data === "string") {
+    return Buffer.from(data, encoding === "binary" ? "utf-8" : encoding);
+  }
+
+  return Buffer.isBuffer(data) ? data : Buffer.from(data);
+}
+
 /**
  * Write file content, coalescing rapid writes.
  * Fresh writes resolve with real mtime/size once data is on disk. Buffered writes resolve immediately with synthetic values; the disk flush happens later when the debounce timer fires.
@@ -347,6 +355,8 @@ function _reset() {
 module.exports = {
   writeCoalesced,
   getPending,
+  estimateSize,
+  pendingBuffer,
   pendingPaths,
   cancelPending,
   flushPending,
