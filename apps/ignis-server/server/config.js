@@ -89,7 +89,7 @@ module.exports = {
     return Object.keys(vaults)[0] || null;
   },
   getVaultPath(id) {
-    return vaults[id] || null;
+    return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
   },
   // { vaultId, relPath } or null
   vaultForPath(absPath) {

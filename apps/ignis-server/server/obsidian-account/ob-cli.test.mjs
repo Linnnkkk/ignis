@@ -76,8 +76,14 @@ childProcess.spawn = (command, args, opts) => {
   proc.stderr = new EventEmitter();
   proc.stdin = createStdin();
   proc.killed = false;
-  proc.kill = () => {
-    proc.killed = true;
+  proc.signals = [];
+  proc.kill = (signal) => {
+    proc.signals.push(signal);
+
+    if (signal === "SIGKILL" || !(scriptedRun && scriptedRun.ignoresTerm)) {
+      proc.killed = true;
+      proc.emit("close", null);
+    }
   };
 
   obRuns.push({
@@ -89,7 +95,7 @@ childProcess.spawn = (command, args, opts) => {
 
   const script = scriptedRun;
 
-  if (script) {
+  if (script && script.code !== undefined) {
     setImmediate(() => {
       if (script.token) {
         const file = authTokenFileIn(opts.env.HOME);
@@ -257,7 +263,7 @@ describe("login", () => {
     });
   });
 
-  it("copies the token ob earned into the configured home", async () => {
+  it("returns the token ob earned without touching the configured home", async () => {
     writeAuthToken("stale-token");
     scriptedRun = {
       stdout: SUCCESS_STDOUT,
@@ -266,11 +272,35 @@ describe("login", () => {
       token: "fresh-token\n",
     };
 
-    await obCli.login(CREDENTIALS);
+    const outcome = await obCli.login(CREDENTIALS);
 
+    expect(outcome.token).toBe("fresh-token");
     expect(fs.readFileSync(obCli.getAuthTokenFile(), "utf-8")).toBe(
-      "fresh-token",
+      "stale-token",
     );
+  });
+
+  it("escalates to SIGKILL when ob ignores SIGTERM after the bound", async () => {
+    vi.useFakeTimers();
+    scriptedRun = { ignoresTerm: true };
+
+    try {
+      const pending = obCli.login(CREDENTIALS);
+
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(obRuns[0].proc.signals).toEqual(["SIGTERM"]);
+      expect(obRuns[0].proc.killed).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(obRuns[0].proc.signals).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(await pending).toEqual({
+        outcome: "error",
+        message: "ob login timed out",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("resolves error when no token file was written", async () => {

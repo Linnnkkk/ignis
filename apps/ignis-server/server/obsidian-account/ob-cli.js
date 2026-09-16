@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 
 const LOGIN_TIMEOUT_MS = 30000;
+const LOGIN_KILL_MS = 5000;
 const BAD_CREDENTIALS_TEXT = "double check your email and password";
 const OVERLOAD_TEXT = "Unexpected token";
 
@@ -99,7 +100,12 @@ function runCommand(args, opts = {}) {
     let stdout = "";
     let stderr = "";
 
-    const proc = spawnOb(args, opts);
+    const { input, ...spawnOpts } = opts;
+    const proc = spawnOb(args, spawnOpts);
+
+    if (input !== undefined) {
+      proc.stdin.end(input);
+    }
 
     proc.stdout.on("data", (data) => {
       stdout += data.toString();
@@ -131,18 +137,6 @@ function readTokenFile(file) {
   } catch {
     return "";
   }
-}
-
-function writeAuthToken(token) {
-  const file = getAuthTokenFile();
-
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, token, { encoding: "utf-8", mode: 0o600 });
-
-  try {
-    // if file already existed
-    fs.chmodSync(file, 0o600);
-  } catch {}
 }
 
 function classifyLogin({ code, stdout, stderr, email, scratchHome }) {
@@ -188,8 +182,10 @@ function login({ email, password, mfa }) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     let scratchHome;
     let proc;
+    let killTimer = null;
 
     try {
       // use temp dir to avoid ob sign out
@@ -206,6 +202,7 @@ function login({ email, password, mfa }) {
 
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
 
       try {
         fs.rmSync(scratchHome, { recursive: true, force: true });
@@ -215,11 +212,15 @@ function login({ email, password, mfa }) {
     }
 
     const timer = setTimeout(() => {
-      if (proc) {
-        proc.kill();
+      timedOut = true;
+
+      if (!proc) {
+        settle({ outcome: "error", message: "ob login timed out" });
+        return;
       }
 
-      settle({ outcome: "error", message: "ob login timed out" });
+      proc.kill("SIGTERM");
+      killTimer = setTimeout(() => proc.kill("SIGKILL"), LOGIN_KILL_MS);
     }, LOGIN_TIMEOUT_MS);
 
     const env = obEnv(scratchHome);
@@ -240,24 +241,12 @@ function login({ email, password, mfa }) {
     });
 
     proc.on("close", (code) => {
-      const outcome = classifyLogin({
-        code,
-        stdout,
-        stderr,
-        email,
-        scratchHome,
-      });
-
-      if (outcome.outcome === "ok") {
-        try {
-          writeAuthToken(outcome.token);
-        } catch (e) {
-          settle({ outcome: "error", message: e.message });
-          return;
-        }
+      if (timedOut) {
+        settle({ outcome: "error", message: "ob login timed out" });
+        return;
       }
 
-      settle(outcome);
+      settle(classifyLogin({ code, stdout, stderr, email, scratchHome }));
     });
 
     proc.on("error", (err) => {

@@ -15,6 +15,28 @@ const NUMBER_KEYS = [
 ];
 const LIST_KEYS = ["proxyAllowlist", "directFetchHosts", "trustedVaults"];
 
+const MAX_RULE_SETS = 64;
+const MAX_PATTERNS_PER_SET = 200;
+const MAX_PATTERN_LENGTH = 256;
+// each "**" multiplies the matcher's backtracking
+const MAX_DOUBLE_STARS = 3;
+
+function invalidPatternReason(pattern) {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    return `a pattern is longer than ${MAX_PATTERN_LENGTH} characters`;
+  }
+
+  if (pattern.split("**").length - 1 > MAX_DOUBLE_STARS) {
+    return `a pattern uses ** more than ${MAX_DOUBLE_STARS} times`;
+  }
+
+  if (!watcher.canCompileIgnorePattern(pattern)) {
+    return "a pattern is not a valid gitignore pattern";
+  }
+
+  return null;
+}
+
 function validate(body) {
   const clean = {};
 
@@ -86,6 +108,10 @@ function validate(body) {
       throw new Error("ignoreRules must be an array of rule sets");
     }
 
+    if (body.ignoreRules.length > MAX_RULE_SETS) {
+      throw new Error(`ignoreRules holds more than ${MAX_RULE_SETS} rule sets`);
+    }
+
     clean.ignoreRules = body.ignoreRules.map((rule) => {
       if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
         throw new Error("each ignoreRules entry must be an object");
@@ -103,9 +129,25 @@ function validate(body) {
         );
       }
 
+      if (patterns.length > MAX_PATTERNS_PER_SET) {
+        throw new Error(
+          `a rule set holds more than ${MAX_PATTERNS_PER_SET} patterns`,
+        );
+      }
+
+      const trimmed = patterns.map((p) => p.trim());
+
+      for (const pattern of trimmed) {
+        const reason = invalidPatternReason(pattern);
+
+        if (reason) {
+          throw new Error(reason);
+        }
+      }
+
       return {
         name: rule.name === undefined ? "" : String(rule.name),
-        patterns: patterns.map((p) => p.trim()),
+        patterns: trimmed,
       };
     });
   }
@@ -160,7 +202,9 @@ router.post("/", async (req, res) => {
   await applySettings(effective, previous);
 
   // Cache sizes ride in the bootstrap response; clear it so the next page load picks up new values.
-  bootstrapCache.invalidateAll();
+  if (Object.keys(clean).length > 0) {
+    bootstrapCache.invalidateAll();
+  }
 
   res.json(effective);
 });

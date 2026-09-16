@@ -157,18 +157,34 @@ class SyncManager {
     fs.writeFileSync(this.stateFile, JSON.stringify(data, null, 2), "utf-8");
   }
 
+  async createRemoteVault(name, options = {}) {
+    const args = ["sync-create-remote", "--name", name];
+
+    if (options.encryption) {
+      args.push("--encryption", options.encryption);
+    }
+
+    if (options.region) {
+      args.push("--region", options.region);
+    }
+
+    // pass password with stdin
+    await runCommand(args, {
+      input: options.password ? `${options.password}\n` : "",
+    });
+  }
+
   async setupSync(vaultId, vaultPath, remoteVault, options = {}) {
     const args = ["sync-setup", "--vault", remoteVault, "--path", "."];
-
-    if (options.vaultPassword) {
-      args.push("--password", options.vaultPassword);
-    }
 
     if (options.deviceName) {
       args.push("--device-name", options.deviceName);
     }
 
-    await runCommand(args, { cwd: vaultPath });
+    await runCommand(args, {
+      cwd: vaultPath,
+      input: options.vaultPassword ? `${options.vaultPassword}\n` : "",
+    });
 
     const state = {
       vaultId,

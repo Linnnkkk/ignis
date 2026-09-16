@@ -27,6 +27,7 @@ const SETTINGS_FILE = path.join(DATA_ROOT, "server-settings.json");
 
 const config = require("../config");
 const settings = require("../settings");
+const bootstrapCache = require("../cache");
 const vaultRouter = require("./vault");
 const { watcher } = require("@ignis/server-core");
 const express = require("express");
@@ -85,6 +86,29 @@ const remove = (vault) =>
   fetch(`${base}/api/vault/remove?vault=${encodeURIComponent(vault)}`, {
     method: "DELETE",
   });
+
+const refresh = (vault) =>
+  fetch(`${base}/api/vault/refresh`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ vault }),
+  });
+
+describe("manual refresh", () => {
+  it("serves a refresh right after an ordinary crawl", async () => {
+    await bootstrapCache.getOrBuild(VAULT_ID);
+
+    expect((await refresh(VAULT_ID)).status).toBe(200);
+  });
+
+  it("refuses a second refresh within the cooldown", async () => {
+    fs.mkdirSync(path.join(VAULT_ROOT, OTHER_ID), { recursive: true });
+    config.refreshVaults();
+
+    expect((await refresh(OTHER_ID)).status).toBe(200);
+    expect((await refresh(OTHER_ID)).status).toBe(429);
+  });
+});
 
 describe("trusted vaults through the vault routes", () => {
   it("reports trust on the vault info fallback", async () => {

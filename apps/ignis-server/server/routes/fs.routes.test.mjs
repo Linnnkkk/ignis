@@ -363,6 +363,46 @@ describe("mutation routes apply to a watched vault's tree", () => {
     expect(crawlLines()).toEqual([]);
   });
 
+  it("adds a file renamed out of an ignored folder to the tree", async () => {
+    watcher.configure({ ignoredPaths: ["@eaDir"] });
+
+    try {
+      await tree();
+      await writeFile("@eaDir/moved.md", "m");
+      await writeFile("kept/anchor.md", "k");
+      await settle();
+      expect((await tree())["@eaDir/moved.md"]).toBeUndefined();
+
+      expect((await rename("@eaDir/moved.md", "kept/moved.md")).ok).toBe(true);
+      await settle();
+
+      expect((await tree())["kept/moved.md"]).toBeDefined();
+    } finally {
+      watcher.configure({ ignoredPaths: [".git"] });
+    }
+  });
+
+  it("drops a file renamed into an ignored folder from the tree", async () => {
+    watcher.configure({ ignoredPaths: ["@eaDir"] });
+
+    try {
+      await tree();
+      await mkdir("@eaDir");
+      await writeFile("kept/leaving.md", "l");
+      await settle();
+      expect((await tree())["kept/leaving.md"]).toBeDefined();
+
+      expect((await rename("kept/leaving.md", "@eaDir/leaving.md")).ok).toBe(
+        true,
+      );
+      await settle();
+
+      expect((await tree())["kept/leaving.md"]).toBeUndefined();
+    } finally {
+      watcher.configure({ ignoredPaths: [".git"] });
+    }
+  });
+
   it("skips a write to a path a configured pattern covers", async () => {
     watcher.configure({ ignoredPaths: ["@eaDir"] });
 

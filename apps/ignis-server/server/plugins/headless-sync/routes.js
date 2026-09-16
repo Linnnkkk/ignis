@@ -1,6 +1,10 @@
 const auth = require("./auth");
 const obCli = require("../../obsidian-account/ob-cli");
 const { invalidConfigReason } = require("./sync-manager");
+const { SYNC_MODES, keysOf } = require("./sync-options");
+
+const SYNC_MODE_KEYS = keysOf(SYNC_MODES);
+const MAX_LOG_LIMIT = 2000;
 const { sanitizeError } = require("@ignis/server-core");
 
 function mountRoutes(router, plugin) {
@@ -59,6 +63,10 @@ function mountRoutes(router, plugin) {
       return res.status(400).json({ error: "vaultId and remoteVault are required" });
     }
 
+    if (mode !== undefined && !SYNC_MODE_KEYS.includes(mode)) {
+      return res.status(400).json({ error: `Unknown sync mode: ${mode}` });
+    }
+
     if (!auth.isAuthenticated(ctx.dataDir)) {
       return res.status(401).json({ error: "Not authenticated" });
     }
@@ -67,6 +75,10 @@ function mountRoutes(router, plugin) {
 
     if (!vaultPath) {
       return res.status(404).json({ error: "Vault not found" });
+    }
+
+    if (!ctx.getEnabledVaults().includes(vaultId)) {
+      return res.status(403).json({ error: "Headless Sync is not enabled for this vault" });
     }
 
     try {
@@ -179,7 +191,12 @@ function mountRoutes(router, plugin) {
       return res.status(400).json({ error: "vaultId is required" });
     }
 
-    const logs = syncManager.getLogs(vaultId, limit ? parseInt(limit) : 100);
+    const requested = Number.parseInt(limit, 10);
+    const count =
+      Number.isInteger(requested) && requested > 0
+        ? Math.min(requested, MAX_LOG_LIMIT)
+        : 100;
+    const logs = syncManager.getLogs(vaultId, count);
     res.json({ logs });
   });
 
@@ -190,6 +207,7 @@ function mountRoutes(router, plugin) {
 
   router.post("/create-remote-vault", async (req, res) => {
     const ctx = plugin.getCtx();
+    const syncManager = plugin.getSyncManager();
     const { name, encryption, password, region } = req.body;
 
     if (!name) {
@@ -200,22 +218,8 @@ function mountRoutes(router, plugin) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const args = ["sync-create-remote", "--name", name];
-
-    if (encryption) {
-      args.push("--encryption", encryption);
-    }
-
-    if (password) {
-      args.push("--password", password);
-    }
-
-    if (region) {
-      args.push("--region", region);
-    }
-
     try {
-      await obCli.runCommand(args);
+      await syncManager.createRemoteVault(name, { encryption, password, region });
       ctx.log(`Created remote vault: ${name}`);
       res.json({ success: true });
     } catch (e) {

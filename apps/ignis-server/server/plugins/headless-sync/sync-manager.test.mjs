@@ -325,6 +325,57 @@ describe("idle restart", () => {
   });
 });
 
+describe("createRemoteVault", () => {
+  it("hands ob the E2EE password on stdin, never as an argument", async () => {
+    const { manager } = createManager();
+
+    await manager.createRemoteVault("Notes", {
+      encryption: "e2ee",
+      password: "hunter2",
+      region: "eu",
+    });
+
+    const run = commandRuns.find((run) => run.args[0] === "sync-create-remote");
+
+    expect(run.args).toEqual([
+      "sync-create-remote",
+      "--name",
+      "Notes",
+      "--encryption",
+      "e2ee",
+      "--region",
+      "eu",
+    ]);
+    expect(run.opts.input).toBe("hunter2\n");
+  });
+});
+
+describe("setupSync", () => {
+  it("hands ob the E2EE password on stdin, never as an argument", async () => {
+    const { manager } = createManager();
+
+    await manager.setupSync("v1", path.join(dataDir, "v1"), "remote1", {
+      vaultPassword: "hunter2",
+    });
+
+    const setup = commandRuns.find((run) => run.args[0] === "sync-setup");
+
+    expect(setup.args).not.toContain("--password");
+    expect(setup.args).not.toContain("hunter2");
+    expect(setup.opts.input).toBe("hunter2\n");
+  });
+
+  it("closes stdin with nothing when no password is given", async () => {
+    const { manager } = createManager();
+
+    await manager.setupSync("v1", path.join(dataDir, "v1"), "remote1");
+
+    const setup = commandRuns.find((run) => run.args[0] === "sync-setup");
+
+    expect(setup.opts.input).toBe("");
+  });
+});
+
 describe("sync configuration", () => {
   const CUSTOM_CONFIG = {
     fileTypes: ["pdf", "image"],

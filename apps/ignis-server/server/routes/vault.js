@@ -13,6 +13,12 @@ const router = express.Router();
 // Vault names become directories under VAULT_ROOT; reject traversal, hidden, and reserved-device names.
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
+// skip a refresh shortly after the last refresh
+const REFRESH_COOLDOWN_MS = 10 * 1000;
+
+// vaultId -> time of the last manual refresh
+const lastRefreshAt = new Map();
+
 function isValidVaultName(name) {
   if (typeof name !== "string" || name.length === 0 || name.length > 255) {
     return false;
@@ -61,6 +67,14 @@ router.post("/refresh", async (req, res) => {
   if (!config.getVaultPath(vault)) {
     return res.status(404).json({ error: "Vault not found" });
   }
+
+  if (Date.now() - (lastRefreshAt.get(vault) || 0) < REFRESH_COOLDOWN_MS) {
+    return res
+      .status(429)
+      .json({ error: "Vault was refreshed a moment ago, try again shortly" });
+  }
+
+  lastRefreshAt.set(vault, Date.now());
 
   try {
     const result = await bootstrapCache.reconcileVault(vault, {

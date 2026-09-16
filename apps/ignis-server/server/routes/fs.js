@@ -47,6 +47,30 @@ function isApplicable(event) {
   );
 }
 
+// notify rename to or from ignored directory
+async function renameEvent(fromPath, toPath, toResolved) {
+  const fromIgnored = watcher.isIgnoredPath(fromPath);
+  const toIgnored = watcher.isIgnoredPath(toPath);
+
+  if (fromIgnored === toIgnored) {
+    return { type: "rename", path: fromPath, toPath };
+  }
+
+  if (toIgnored) {
+    return { type: "deleted", path: fromPath };
+  }
+
+  const stat = await fs.promises.stat(toResolved).catch(() => null);
+
+  if (!stat) {
+    return [];
+  }
+
+  return stat.isDirectory()
+    ? { type: "folder-created", path: toPath }
+    : { type: "created", path: toPath };
+}
+
 async function applyToTree(req, events) {
   if (!req._vaultId) {
     return;
@@ -306,18 +330,21 @@ router.post("/rename", async (req, res) => {
   }
 
   try {
-    await flushPending(oldResolved);
+    await flushPendingSubtree(oldResolved);
     await fs.promises.rename(oldResolved, newResolved);
     // Drop the destination's buffer so a stale write cannot land on the renamed file.
     cancelPending(newResolved);
 
     res.json({ ok: true });
 
-    applyToTree(req, {
-      type: "rename",
-      path: toRelative(vaultRoot, oldResolved),
-      toPath: toRelative(vaultRoot, newResolved),
-    });
+    applyToTree(
+      req,
+      renameEvent(
+        toRelative(vaultRoot, oldResolved),
+        toRelative(vaultRoot, newResolved),
+        newResolved,
+      ),
+    );
   } catch (e) {
     res.status(500).json(sanitizeError(e));
   }

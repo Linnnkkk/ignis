@@ -15,6 +15,15 @@ function compileIgnoreList(patterns) {
 
 let ignoreList = compileIgnoreList(DEFAULT_IGNORED_PATHS);
 
+function canCompileIgnorePattern(pattern) {
+  try {
+    compileIgnoreList([pattern]).ignores("a/b");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function configure(opts) {
   if (Array.isArray(opts?.ignoredPaths)) {
     ignoreList = compileIgnoreList(opts.ignoredPaths);
@@ -27,7 +36,15 @@ function isIgnoredPath(p) {
     .replace(/^\.\//, "")
     .replace(/^\/+|\/+$/g, "");
 
-  return rel !== "" && ignoreList.ignores(rel);
+  if (rel === "") {
+    return false;
+  }
+
+  try {
+    return ignoreList.ignores(rel);
+  } catch {
+    return false;
+  }
 }
 
 // Idle window before a watcher with no listeners stops.
@@ -329,6 +346,7 @@ module.exports = {
   stopAll,
   isWatching,
   isIgnoredPath,
+  canCompileIgnorePattern,
   addListener,
   removeListener,
   addGlobalListener,

@@ -139,3 +139,33 @@ describe("settings validate", () => {
     expect(validate({ bogusKey: 1 })).toEqual({});
   });
 });
+
+describe("ignore rule limits", () => {
+  const ruleSet = (patterns) => ({ ignoreRules: [{ name: "x", patterns }] });
+
+  it("rejects a pattern that repeats ** more than three times", () => {
+    expect(() => validate(ruleSet(["a/**/b/**/c/**/d/**/e"]))).toThrow(
+      /\*\* more than/,
+    );
+    expect(validate(ruleSet(["a/**/b/**/c/**/d"])).ignoreRules).toHaveLength(1);
+  });
+
+  it("rejects a pattern longer than 256 characters", () => {
+    expect(() => validate(ruleSet(["a".repeat(257)]))).toThrow(/longer than/);
+  });
+
+  it("rejects more than 200 patterns in one rule set", () => {
+    const patterns = Array.from({ length: 201 }, (_, i) => `p${i}`);
+
+    expect(() => validate(ruleSet(patterns))).toThrow(/more than 200/);
+  });
+
+  it("rejects more than 64 rule sets", () => {
+    const ignoreRules = Array.from({ length: 65 }, (_, i) => ({
+      name: `r${i}`,
+      patterns: ["x"],
+    }));
+
+    expect(() => validate({ ignoreRules })).toThrow(/more than 64/);
+  });
+});

@@ -171,3 +171,20 @@ describe("stopAll", () => {
     await expect(watcher.stopAll()).resolves.toEqual([]);
   });
 });
+
+describe("pattern compilation", () => {
+  it("reports a pattern the matcher cannot compile", () => {
+    expect(watcher.canCompileIgnorePattern("?".repeat(60000))).toBe(false);
+    expect(watcher.canCompileIgnorePattern("*.tmp")).toBe(true);
+  });
+
+  it("treats nothing as ignored when the configured list cannot compile", () => {
+    watcher.configure({ ignoredPaths: ["?".repeat(60000)] });
+
+    try {
+      expect(watcher.isIgnoredPath("notes/a.md")).toBe(false);
+    } finally {
+      watcher.configure({ ignoredPaths: [".git"] });
+    }
+  });
+});
