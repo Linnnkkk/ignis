@@ -5,7 +5,7 @@ const path = require("path");
 const bootstrapCache = require("../cache");
 const settings = require("../settings");
 const treeReconcile = require("../cache/reconcile");
-const { withWatcherStopped } = require("../vault-lifecycle");
+const { withWatcherStopped } = require("../vault/lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
 
 const router = express.Router();

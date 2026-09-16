@@ -30,7 +30,13 @@ describe("cacheControlFor", () => {
   });
 
   it("covers css, fonts, wasm, and sourcemaps", () => {
-    for (const p of ["/app.css", "/x.woff2", "/x.ttf", "/x.wasm", "/x.js.map"]) {
+    for (const p of [
+      "/app.css",
+      "/x.woff2",
+      "/x.ttf",
+      "/x.wasm",
+      "/x.js.map",
+    ]) {
       expect(cacheControlFor(p, true)).toContain("immutable");
     }
   });

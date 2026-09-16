@@ -78,19 +78,19 @@ class HeadlessSyncSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     if (isCoreSyncEnabled()) {
-      const syncWarningSetting = new Setting(containerEl)
-        .setName("Obsidian Sync is active");
+      const syncWarningSetting = new Setting(containerEl).setName(
+        "Obsidian Sync is active",
+      );
 
       syncWarningSetting.descEl.createEl("span", {
         text: "Headless Sync cannot run alongside Obsidian's built-in sync to avoid conflicts. Disable Obsidian Sync in Core Plugins to use Headless Sync instead.",
         cls: "mod-warning",
       });
 
-      syncWarningSetting
-        .addButton((btn) => {
-          btn.setButtonText("Open Core Plugins").onClick(() => {
-            this.app.setting.openTabById("plugins");
-          });
+      syncWarningSetting.addButton((btn) => {
+        btn.setButtonText("Open Core Plugins").onClick(() => {
+          this.app.setting.openTabById("plugins");
+        });
       });
 
       return;

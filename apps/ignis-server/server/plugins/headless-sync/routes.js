@@ -32,7 +32,11 @@ function mountRoutes(router, plugin) {
     }
 
     try {
-      auth.saveToken(ctx.dataDir, { token, email: email || null, name: name || null });
+      auth.saveToken(ctx.dataDir, {
+        token,
+        email: email || null,
+        name: name || null,
+      });
       ctx.log(`Auth token saved${email ? ` for ${email}` : ""}`);
       res.json({ success: true });
     } catch (e) {
@@ -57,10 +61,19 @@ function mountRoutes(router, plugin) {
   router.post("/setup", async (req, res) => {
     const ctx = plugin.getCtx();
     const syncManager = plugin.getSyncManager();
-    const { vaultId, remoteVault, remoteVaultName, vaultPassword, deviceName, mode } = req.body;
+    const {
+      vaultId,
+      remoteVault,
+      remoteVaultName,
+      vaultPassword,
+      deviceName,
+      mode,
+    } = req.body;
 
     if (!vaultId || !remoteVault) {
-      return res.status(400).json({ error: "vaultId and remoteVault are required" });
+      return res
+        .status(400)
+        .json({ error: "vaultId and remoteVault are required" });
     }
 
     if (mode !== undefined && !SYNC_MODE_KEYS.includes(mode)) {
@@ -78,16 +91,23 @@ function mountRoutes(router, plugin) {
     }
 
     if (!ctx.getEnabledVaults().includes(vaultId)) {
-      return res.status(403).json({ error: "Headless Sync is not enabled for this vault" });
+      return res
+        .status(403)
+        .json({ error: "Headless Sync is not enabled for this vault" });
     }
 
     try {
-      const state = await syncManager.setupSync(vaultId, vaultPath, remoteVault, {
-        remoteVaultName,
-        vaultPassword,
-        deviceName,
-        mode,
-      });
+      const state = await syncManager.setupSync(
+        vaultId,
+        vaultPath,
+        remoteVault,
+        {
+          remoteVaultName,
+          vaultPassword,
+          deviceName,
+          mode,
+        },
+      );
 
       res.json({ success: true, state });
     } catch (e) {
@@ -219,7 +239,11 @@ function mountRoutes(router, plugin) {
     }
 
     try {
-      await syncManager.createRemoteVault(name, { encryption, password, region });
+      await syncManager.createRemoteVault(name, {
+        encryption,
+        password,
+        region,
+      });
       ctx.log(`Created remote vault: ${name}`);
       res.json({ success: true });
     } catch (e) {

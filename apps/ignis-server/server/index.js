@@ -1,11 +1,10 @@
 const express = require("express");
-const fs = require("fs");
 const path = require("path");
 const compression = require("compression");
 const config = require("./config");
 const settings = require("./settings");
-const { getVersion } = require("./version");
-const { versionedSrc, cacheControlFor } = require("./cache-headers");
+const { cacheControlFor } = require("./static/cache-headers");
+const { buildIndexHtml } = require("./static/index-html");
 const {
   setupWebSocket,
   watcher,
@@ -15,7 +14,7 @@ const {
 const {
   BRIDGE_PLUGIN_ID,
   migratePluginsFromAllVaults,
-} = require("./bridge-plugin");
+} = require("./plugin-system/migrate-bridge");
 const {
   initPlugins,
   shutdownPlugins,
@@ -96,7 +95,7 @@ const bootstrapCache = require("./cache");
 const treeReconcile = require("./cache/reconcile");
 const { createMetadataChannel } = require("./cache/metadata-channel");
 const { registerCacheListeners } = require("./cache/listeners");
-const vaultLifecycle = require("./vault-lifecycle");
+const vaultLifecycle = require("./vault/lifecycle");
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
 
@@ -159,58 +158,6 @@ app.use("/vault-files", (req, res, next) => {
   req.url = "/" + parts.slice(1).join("/");
   express.static(vaultPath)(req, res, next);
 });
-
-// Serve our own index.html. Obsidian's scripts are discovered at startup and injected dynamically by the client.
-let cachedHtml = null;
-
-function buildIndexHtml() {
-  if (cachedHtml) {
-    return cachedHtml;
-  }
-
-  const version = getVersion();
-
-  // Discover Obsidian's script tags from their index.html
-  const obsidianHtmlPath = path.join(config.obsidianAssetsPath, "index.html");
-  const obsidianHtml = fs.readFileSync(obsidianHtmlPath, "utf-8");
-  const scriptRegex = /<script[^>]+src="([^"]+)"[^>]*>/g;
-  const scripts = [];
-  let match;
-
-  while ((match = scriptRegex.exec(obsidianHtml)) !== null) {
-    scripts.push(match[1]);
-  }
-
-  // Version Obsidian's assets by the Obsidian version so an upgrade busts their immutable cache.
-  // Omitted when the version is unknown, so nothing is pinned immutable against a wrong version.
-  const ov = config.obsidianVersion;
-  const obsidianVersion = ov && ov !== "0.0.0" ? ov : null;
-
-  // Build from our own template
-  const templatePath = path.join(__dirname, "assets", "index.html");
-  let html = fs.readFileSync(templatePath, "utf-8");
-
-  html = html.replace("__IGNIS_UI_SRC__", `ignis-ui.js?v=${version}`);
-  html = html.replace("__SHIM_LOADER_SRC__", `shim-loader.js?v=${version}`);
-  html = html.replace(
-    "__APP_CSS_SRC__",
-    versionedSrc("app.css", obsidianVersion),
-  );
-  html = html.replace(
-    "__OBSIDIAN_SCRIPTS__",
-    JSON.stringify(scripts.map((s) => versionedSrc(s, obsidianVersion))),
-  );
-
-  if (config.demoMode) {
-    html = html.replace(
-      '<body class="theme-dark">',
-      '<body class="theme-dark" data-demo-mode="true">',
-    );
-  }
-
-  cachedHtml = html;
-  return cachedHtml;
-}
 
 app.get(["/", "/index.html"], (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
