@@ -23,7 +23,7 @@ process.env.PROXY_ALLOW_PRIVATE_HOSTS = "127.0.0.1";
 const dns = require("dns");
 const settings = require("../settings");
 const signin = require("./signin.js");
-const proxyRouter = require("../routes/proxy.js");
+const proxyRouter = require("../routes/proxy");
 const express = require("express");
 
 const EMAIL = "user@example.test";
