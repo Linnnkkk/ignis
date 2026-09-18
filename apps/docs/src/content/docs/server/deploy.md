@@ -134,6 +134,8 @@ Ignis also watches every file in an open vault for changes, and the number of fi
 sysctl fs.inotify.max_user_watches=524288
 ```
 
+You can also exclude folders from being watched, see [Ignored paths](/docs/performance/#ignored-paths).
+
 ### Offline install
 
 If the container cannot reach the internet on first run, you can download the Obsidian `.deb` from [obsidian.md](https://obsidian.md/download) manually, mount it, and point `OBSIDIAN_PACKAGE` at it:
