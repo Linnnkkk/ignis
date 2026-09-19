@@ -10,6 +10,7 @@ import {
 } from "./workspace.js";
 import { prefetchVaultContent } from "./fs/indexer-prefetch.js";
 import { setInputCacheLimits } from "./fs/input-cache.js";
+import { setSilentByDefault } from "./fs/write-durability.js";
 import { setDirectFetchHosts } from "./util/url.js";
 import { autoTrustDemoVaults, maybeProvisionDemoVault } from "./demo.js";
 import { initNativeMenuGuard } from "./native-menu-guard.js";
@@ -31,6 +32,13 @@ function applyServerSettings(s) {
 
   setInputCacheLimits({ maxSize: s.inputCacheBytes, ttlMs: s.inputCacheTtlMs });
   setDirectFetchHosts(s.directFetchHosts);
+
+  window.__ignis.flags = {
+    suppressWriteFailures: s.devSuppressWriteFailures === true,
+    forceReadingView: s.devForceReadingView === true,
+  };
+
+  setSilentByDefault(window.__ignis.flags.suppressWriteFailures);
 }
 
 export function getBootstrapVirtualPlugins() {
@@ -252,10 +260,15 @@ export function initialize() {
 
   if (bootstrap) {
     applyVaultInfo(bootstrap.vault);
+
+    if (bootstrap.vault.trustPlugins) {
+      vaultService.setVaultTrust(bootstrap.vault.id);
+    }
+
     window.__vaultList = bootstrap.vaultList;
     autoTrustDemoVaults(bootstrap.vaultList);
     applyTree(bootstrap.tree);
-    fsShim._watcherClient.setTreeRevision(bootstrap.treeRevision);
+    fsShim._watcherClient.setTreeEtag(bootstrap.etag);
     applyCoreSyncGuard(bootstrap.plugins);
     bootstrapVirtualPlugins = bootstrap.virtualPlugins || [];
     applyServerSettings(bootstrap.settings);

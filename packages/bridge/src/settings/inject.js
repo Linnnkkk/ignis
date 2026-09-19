@@ -1,4 +1,5 @@
 import * as generalTab from "./general-tab.js";
+import * as vaultTab from "./vault-tab.js";
 import * as serverPluginsTab from "./server-plugins-tab.js";
 import { createNavEl, createTab, createGroup } from "./settings-ui.js";
 import {
@@ -93,6 +94,7 @@ function injectIgnisSettings(setting, app, plugin) {
 
   const tabs = [
     createTab("ignis-general", "General", generalTab.display, app, "flame"),
+    createTab("ignis-vault", "Vault", vaultTab.display, app, "vault"),
     createTab(
       "ignis-core-plugins",
       "Core plugins",
