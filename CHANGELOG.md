@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.12] - Karm (2026-09-21)
+
+### Fixed
+
+- "Always trust plugins" setting is now applied consistently in fresh browsers.
+
 ## [0.8.11] - Karm (2026-09-19)
 
 ### Added
