@@ -50,8 +50,6 @@ const syncHandlers = {
   // 真实 Electron 里由主进程返回策略对象；这里返回 null/默认值 = "无限制"，
   // 渲染器拿到后按默认路径走（与 frame/sandbox 的处理同款）。
   // 缺失时渲染器启动序列中断（1.13.7 实测：sendSync 卡死后 window.close()）。
-  policy: () => null,
-  terms: () => ({ accepted: true }),
 
   relaunch: () => {
     window.location.reload();
