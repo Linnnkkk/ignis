@@ -14252,12 +14252,15 @@ var require_json = __commonJS({
     var JSON_SYNTAX_REGEXP = /#+/g;
     function json(options) {
       var opts = options || {};
-      var limit = typeof opts.limit !== "number" ? bytes.parse(opts.limit || "100kb") : opts.limit;
+      var limit = typeof opts.limit === "undefined" || opts.limit === null ? 102400 : bytes.parse(opts.limit);
       var inflate = opts.inflate !== false;
       var reviver = opts.reviver;
       var strict = opts.strict !== false;
       var type = opts.type || "application/json";
       var verify = opts.verify || false;
+      if (limit === null) {
+        throw new TypeError('option limit "' + String(opts.limit) + '" is invalid');
+      }
       if (verify !== false && typeof verify !== "function") {
         throw new TypeError("option verify must be function");
       }
@@ -14379,9 +14382,12 @@ var require_raw = __commonJS({
     function raw(options) {
       var opts = options || {};
       var inflate = opts.inflate !== false;
-      var limit = typeof opts.limit !== "number" ? bytes.parse(opts.limit || "100kb") : opts.limit;
+      var limit = typeof opts.limit === "undefined" || opts.limit === null ? 102400 : bytes.parse(opts.limit);
       var type = opts.type || "application/octet-stream";
       var verify = opts.verify || false;
+      if (limit === null) {
+        throw new TypeError('option limit "' + String(opts.limit) + '" is invalid');
+      }
       if (verify !== false && typeof verify !== "function") {
         throw new TypeError("option verify must be function");
       }
@@ -14437,9 +14443,12 @@ var require_text = __commonJS({
       var opts = options || {};
       var defaultCharset = opts.defaultCharset || "utf-8";
       var inflate = opts.inflate !== false;
-      var limit = typeof opts.limit !== "number" ? bytes.parse(opts.limit || "100kb") : opts.limit;
+      var limit = typeof opts.limit === "undefined" || opts.limit === null ? 102400 : bytes.parse(opts.limit);
       var type = opts.type || "text/plain";
       var verify = opts.verify || false;
+      if (limit === null) {
+        throw new TypeError('option limit "' + String(opts.limit) + '" is invalid');
+      }
       if (verify !== false && typeof verify !== "function") {
         throw new TypeError("option verify must be function");
       }
@@ -16147,6 +16156,7 @@ var require_utils = __commonJS({
     "use strict";
     var formats = require_formats();
     var getSideChannel = require_side_channel();
+    var defineProperty = require_es_define_property();
     var has = Object.prototype.hasOwnProperty;
     var isArray = Array.isArray;
     var overflowChannel = getSideChannel();
@@ -16194,6 +16204,18 @@ var require_utils = __commonJS({
       }
       return obj;
     };
+    var setProperty = function setProperty2(obj, key, value) {
+      if (key === "__proto__" && defineProperty) {
+        defineProperty(obj, key, {
+          configurable: true,
+          enumerable: true,
+          value,
+          writable: true
+        });
+      } else {
+        obj[key] = value;
+      }
+    };
     var merge = function merge2(target, source, options) {
       if (!source) {
         return target;
@@ -16201,7 +16223,10 @@ var require_utils = __commonJS({
       if (typeof source !== "object" && typeof source !== "function") {
         if (isArray(target)) {
           var nextIndex = target.length;
-          if (options && typeof options.arrayLimit === "number" && nextIndex > options.arrayLimit) {
+          if (options && typeof options.arrayLimit === "number" && nextIndex >= options.arrayLimit) {
+            if (options.throwOnLimitExceeded) {
+              throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+            }
             return markOverflow(arrayToObject(target.concat(source), options), nextIndex);
           }
           target[nextIndex] = source;
@@ -16232,6 +16257,9 @@ var require_utils = __commonJS({
         }
         var combined = [target].concat(source);
         if (options && typeof options.arrayLimit === "number" && combined.length > options.arrayLimit) {
+          if (options.throwOnLimitExceeded) {
+            throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+          }
           return markOverflow(arrayToObject(combined, options), combined.length - 1);
         }
         return combined;
@@ -16253,14 +16281,20 @@ var require_utils = __commonJS({
             target[i] = item;
           }
         });
+        if (options && typeof options.arrayLimit === "number" && target.length > options.arrayLimit) {
+          if (options.throwOnLimitExceeded) {
+            throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+          }
+          return markOverflow(arrayToObject(target, options), target.length - 1);
+        }
         return target;
       }
       return Object.keys(source).reduce(function(acc, key) {
         var value = source[key];
         if (has.call(acc, key)) {
-          acc[key] = merge2(acc[key], value, options);
+          setProperty(acc, key, merge2(acc[key], value, options));
         } else {
-          acc[key] = value;
+          setProperty(acc, key, value);
         }
         if (isOverflow(source) && !isOverflow(acc)) {
           markOverflow(acc, getMaxIndex(source));
@@ -16276,7 +16310,7 @@ var require_utils = __commonJS({
     };
     var assign = function assignSingleSource(target, source) {
       return Object.keys(source).reduce(function(acc, key) {
-        acc[key] = source[key];
+        setProperty(acc, key, source[key]);
         return acc;
       }, target);
     };
@@ -16310,6 +16344,13 @@ var require_utils = __commonJS({
       var out = "";
       for (var j = 0; j < string.length; j += limit) {
         var segment = string.length >= limit ? string.slice(j, j + limit) : string;
+        if (j + limit < string.length) {
+          var last = segment.charCodeAt(segment.length - 1);
+          if (last >= 55296 && last <= 56319) {
+            segment = segment.slice(0, -1);
+            j -= 1;
+          }
+        }
         var arr = [];
         for (var i = 0; i < segment.length; ++i) {
           var c = segment.charCodeAt(i);
@@ -16339,7 +16380,7 @@ var require_utils = __commonJS({
     };
     var compact = function compact2(value) {
       var queue = [{ obj: { o: value }, prop: "o" }];
-      var refs = [];
+      var refs = getSideChannel();
       for (var i = 0; i < queue.length; ++i) {
         var item = queue[i];
         var obj = item.obj[item.prop];
@@ -16347,9 +16388,9 @@ var require_utils = __commonJS({
         for (var j = 0; j < keys.length; ++j) {
           var key = keys[j];
           var val = obj[key];
-          if (typeof val === "object" && val !== null && refs.indexOf(val) === -1) {
+          if (typeof val === "object" && val !== null && !refs.has(val)) {
             queue[queue.length] = { obj, prop: key };
-            refs[refs.length] = val;
+            refs.set(val, true);
           }
         }
       }
@@ -16363,17 +16404,27 @@ var require_utils = __commonJS({
       if (!obj || typeof obj !== "object") {
         return false;
       }
-      return !!(obj.constructor && obj.constructor.isBuffer && obj.constructor.isBuffer(obj));
+      return !!(obj.constructor && typeof obj.constructor.isBuffer === "function" && obj.constructor.isBuffer(obj));
     };
-    var combine = function combine2(a, b, arrayLimit, plainObjects) {
+    var combine = function combine2(a, b, arrayLimit, plainObjects, throwOnLimitExceeded) {
       if (isOverflow(a)) {
-        var newIndex = getMaxIndex(a) + 1;
-        a[newIndex] = b;
+        if (throwOnLimitExceeded) {
+          throw new RangeError("Array limit exceeded. Only " + arrayLimit + " element" + (arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+        }
+        var bValues = isArray(b) ? b : [b];
+        var newIndex = getMaxIndex(a);
+        for (var i = 0; i < bValues.length; ++i) {
+          newIndex += 1;
+          a[newIndex] = bValues[i];
+        }
         setMaxIndex(a, newIndex);
         return a;
       }
       var result = [].concat(a, b);
       if (result.length > arrayLimit) {
+        if (throwOnLimitExceeded) {
+          throw new RangeError("Array limit exceeded. Only " + arrayLimit + " element" + (arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+        }
         return markOverflow(arrayToObject(result, { plainObjects }), result.length - 1);
       }
       return result;
@@ -16441,6 +16492,7 @@ var require_stringify = __commonJS({
       charsetSentinel: false,
       commaRoundTrip: false,
       delimiter: "&",
+      depth: Infinity,
       encode: true,
       encodeDotInKeys: false,
       encoder: utils.encode,
@@ -16460,8 +16512,11 @@ var require_stringify = __commonJS({
       return typeof v === "string" || typeof v === "number" || typeof v === "boolean" || typeof v === "symbol" || typeof v === "bigint";
     };
     var sentinel = {};
-    var stringify = function stringify2(object, prefix, generateArrayPrefix, commaRoundTrip, allowEmptyArrays, strictNullHandling, skipNulls, encodeDotInKeys, encoder, filter, sort, allowDots, serializeDate, format, formatter, encodeValuesOnly, charset, sideChannel) {
+    var stringify = function stringify2(object, prefix, generateArrayPrefix, commaRoundTrip, allowEmptyArrays, strictNullHandling, skipNulls, encodeDotInKeys, encoder, filter, sort, allowDots, serializeDate, format, formatter, encodeValuesOnly, charset, sideChannel, depth, currentDepth) {
       var obj = object;
+      if (currentDepth > depth) {
+        throw new RangeError("Input depth exceeded depth option of " + depth);
+      }
       var tmpSc = sideChannel;
       var step = 0;
       var findFlag = false;
@@ -16479,9 +16534,8 @@ var require_stringify = __commonJS({
           step = 0;
         }
       }
-      if (typeof filter === "function") {
-        obj = filter(prefix, obj);
-      } else if (obj instanceof Date) {
+      obj = typeof filter === "function" ? filter(prefix, obj) : obj;
+      if (obj instanceof Date) {
         obj = serializeDate(obj);
       } else if (generateArrayPrefix === "comma" && isArray(obj)) {
         obj = utils.maybeMap(obj, function(value2) {
@@ -16524,7 +16578,7 @@ var require_stringify = __commonJS({
       }
       var encodedPrefix = encodeDotInKeys ? String(prefix).replace(/\./g, "%2E") : String(prefix);
       var adjustedPrefix = commaRoundTrip && isArray(obj) && obj.length === 1 ? encodedPrefix + "[]" : encodedPrefix;
-      if (allowEmptyArrays && isArray(obj) && obj.length === 0) {
+      if (allowEmptyArrays && isArray(obj) && obj.length === 0 && Object.keys(obj).length === 0) {
         return adjustedPrefix + "[]";
       }
       for (var j = 0; j < objKeys.length; ++j) {
@@ -16556,7 +16610,9 @@ var require_stringify = __commonJS({
           formatter,
           encodeValuesOnly,
           charset,
-          valueSideChannel
+          valueSideChannel,
+          depth,
+          currentDepth + 1
         ));
       }
       return values;
@@ -16611,6 +16667,7 @@ var require_stringify = __commonJS({
         charsetSentinel: typeof opts.charsetSentinel === "boolean" ? opts.charsetSentinel : defaults.charsetSentinel,
         commaRoundTrip: !!opts.commaRoundTrip,
         delimiter: typeof opts.delimiter === "undefined" ? defaults.delimiter : opts.delimiter,
+        depth: typeof opts.depth === "number" ? opts.depth : defaults.depth,
         encode: typeof opts.encode === "boolean" ? opts.encode : defaults.encode,
         encodeDotInKeys: typeof opts.encodeDotInKeys === "boolean" ? opts.encodeDotInKeys : defaults.encodeDotInKeys,
         encoder: typeof opts.encoder === "function" ? opts.encoder : defaults.encoder,
@@ -16658,9 +16715,10 @@ var require_stringify = __commonJS({
         if (options.skipNulls && value === null) {
           continue;
         }
+        var encodedKey = options.encodeDotInKeys ? String(key).replace(/\./g, "%2E") : String(key);
         pushToArray(keys, stringify(
           value,
-          key,
+          encodedKey,
           generateArrayPrefix,
           commaRoundTrip,
           options.allowEmptyArrays,
@@ -16676,7 +16734,9 @@ var require_stringify = __commonJS({
           options.formatter,
           options.encodeValuesOnly,
           options.charset,
-          sideChannel
+          sideChannel,
+          options.depth,
+          0
         ));
       }
       var joined = keys.join(options.delimiter);
@@ -16731,6 +16791,17 @@ var require_parse = __commonJS({
     };
     var parseArrayValue = function(val, options, currentArrayLength) {
       if (val && typeof val === "string" && options.comma && val.indexOf(",") > -1) {
+        if (options.throwOnLimitExceeded) {
+          var commaCount = 0;
+          var commaIndex = val.indexOf(",");
+          while (commaIndex > -1) {
+            commaCount += 1;
+            if (commaCount >= options.arrayLimit) {
+              throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+            }
+            commaIndex = val.indexOf(",", commaIndex + 1);
+          }
+        }
         return val.split(",");
       }
       if (options.throwOnLimitExceeded && currentArrayLength >= options.arrayLimit) {
@@ -16802,10 +16873,7 @@ var require_parse = __commonJS({
           val = isArray(val) ? [val] : val;
         }
         if (options.comma && isArray(val) && val.length > options.arrayLimit) {
-          if (options.throwOnLimitExceeded) {
-            throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
-          }
-          val = utils.combine([], val, options.arrayLimit, options.plainObjects);
+          val = utils.combine([], val, options.arrayLimit, options.plainObjects, options.throwOnLimitExceeded);
         }
         if (key !== null) {
           var existing = has.call(obj, key);
@@ -16814,7 +16882,8 @@ var require_parse = __commonJS({
               obj[key],
               val,
               options.arrayLimit,
-              options.plainObjects
+              options.plainObjects,
+              options.throwOnLimitExceeded
             );
           } else if (!existing || options.duplicates === "last") {
             obj[key] = val;
@@ -16841,7 +16910,8 @@ var require_parse = __commonJS({
               [],
               leaf,
               options.arrayLimit,
-              options.plainObjects
+              options.plainObjects,
+              options.throwOnLimitExceeded
             );
           }
         } else {
@@ -17046,9 +17116,12 @@ var require_urlencoded = __commonJS({
       }
       var extended = opts.extended !== false;
       var inflate = opts.inflate !== false;
-      var limit = typeof opts.limit !== "number" ? bytes.parse(opts.limit || "100kb") : opts.limit;
+      var limit = typeof opts.limit === "undefined" || opts.limit === null ? 102400 : bytes.parse(opts.limit);
       var type = opts.type || "application/x-www-form-urlencoded";
       var verify = opts.verify || false;
+      if (limit === null) {
+        throw new TypeError('option limit "' + String(opts.limit) + '" is invalid');
+      }
       if (verify !== false && typeof verify !== "function") {
         throw new TypeError("option verify must be function");
       }
@@ -21648,7 +21721,7 @@ var require_request = __commonJS({
       var method = this.method;
       var res = this.res;
       var status = res.statusCode;
-      if ("GET" !== method && "HEAD" !== method)
+      if ("GET" !== method && "HEAD" !== method && "QUERY" !== method)
         return false;
       if (status >= 200 && status < 300 || 304 === status) {
         return fresh(this.headers, {
@@ -23494,270 +23567,6 @@ var require_compression = __commonJS({
   }
 });
 
-// apps/ignis-server/server/config.js
-var require_config = __commonJS({
-  "apps/ignis-server/server/config.js"(exports2, module2) {
-    var path2 = require("path");
-    var fs2 = require("fs");
-    var REPO_ROOT2 = path2.join(__dirname, "..", "..", "..");
-    var vaultRoot = process.env.VAULT_ROOT || path2.join(REPO_ROOT2, "vaults");
-    var dataRoot = process.env.DATA_ROOT || path2.join(REPO_ROOT2, "data");
-    try {
-      fs2.mkdirSync(vaultRoot, { recursive: true });
-    } catch (e) {
-      console.error("[config] Failed to create VAULT_ROOT:", vaultRoot, e.message);
-    }
-    try {
-      fs2.mkdirSync(dataRoot, { recursive: true });
-    } catch (e) {
-      console.error("[config] Failed to create DATA_ROOT:", dataRoot, e.message);
-    }
-    function discoverVaults() {
-      const vaults2 = /* @__PURE__ */ Object.create(null);
-      try {
-        const entries = fs2.readdirSync(vaultRoot, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.name.startsWith(".")) {
-            continue;
-          }
-          let isDir = entry.isDirectory();
-          if (!isDir && entry.isSymbolicLink()) {
-            try {
-              isDir = fs2.statSync(path2.join(vaultRoot, entry.name)).isDirectory();
-            } catch (e) {
-              console.error(
-                "[config] Skipping unreadable vault entry:",
-                entry.name,
-                e.message
-              );
-            }
-          }
-          if (isDir) {
-            vaults2[entry.name] = path2.join(vaultRoot, entry.name);
-          }
-        }
-      } catch (e) {
-        console.error("[config] Failed to read VAULT_ROOT:", vaultRoot, e.message);
-      }
-      if (Object.keys(vaults2).length === 0 && process.env.AUTO_CREATE_DEFAULT === "true") {
-        const defaultPath = path2.join(vaultRoot, "My Vault");
-        try {
-          fs2.mkdirSync(path2.join(defaultPath, ".obsidian"), { recursive: true });
-          vaults2["My Vault"] = defaultPath;
-          console.log("[config] Created default vault: My Vault");
-        } catch (e) {
-          console.error("[config] Failed to create default vault:", e.message);
-        }
-      }
-      return vaults2;
-    }
-    var vaults = discoverVaults();
-    module2.exports = {
-      port: process.env.PORT || 8080,
-      host: process.env.LISTEN_HOST || "127.0.0.1",
-      vaultRoot,
-      dataRoot,
-      get vaults() {
-        return vaults;
-      },
-      get defaultVaultId() {
-        return Object.keys(vaults)[0] || null;
-      },
-      getVaultPath(id) {
-        return vaults[id] || null;
-      },
-      refreshVaults() {
-        vaults = discoverVaults();
-        return vaults;
-      },
-      demoMode: process.env.DEMO_MODE === "true",
-      demoMaxSessions: parseInt(process.env.DEMO_MAX_SESSIONS) || 20,
-      demoVaultsPerSession: parseInt(process.env.DEMO_VAULTS_PER_SESSION) || 3,
-      demoSessionQuotaBytes: parseInt(process.env.DEMO_SESSION_QUOTA_BYTES) || 700 * 1024,
-      demoTimeoutMs: parseInt(process.env.DEMO_TIMEOUT_MS) || 30 * 60 * 1e3,
-      demoTemplateDir: process.env.DEMO_TEMPLATE_DIR || path2.join(__dirname, "demo-template"),
-      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.12.7_unpacked"),
-      get obsidianVersion() {
-        const assetsPath = this.obsidianAssetsPath;
-        try {
-          const pkg = JSON.parse(
-            fs2.readFileSync(path2.join(assetsPath, "package.json"), "utf-8")
-          );
-          return pkg.version || "0.0.0";
-        } catch {
-          return "0.0.0";
-        }
-      }
-    };
-  }
-});
-
-// apps/ignis-server/server/settings.js
-var require_settings = __commonJS({
-  "apps/ignis-server/server/settings.js"(exports2, module2) {
-    var fs2 = require("fs");
-    var path2 = require("path");
-    var config2 = require_config();
-    var SETTINGS_FILE = path2.join(config2.dataRoot, "server-settings.json");
-    var DEFAULTS = {
-      contentCacheBytes: 50 * 1024 * 1024,
-      inputCacheBytes: 200 * 1024 * 1024,
-      inputCacheTtlMs: 5 * 60 * 1e3,
-      writeCoalesceMs: 0,
-      maxBodyBytes: 50 * 1024 * 1024,
-      // "any" reaches any public host, "allowlist" restricts to proxyAllowlist, "disabled" blocks all proxying.
-      proxyMode: "any",
-      // Empty allows any public host.
-      proxyAllowlist: [],
-      // Hosts the browser fetches directly instead of through the proxy; they must send permissive CORS.
-      directFetchHosts: [],
-      wsOrigins: [],
-      // Private IPs/CIDRs the proxy may reach despite the SSRF guard.
-      proxyAllowPrivate: []
-    };
-    var PROXY_MODES = ["any", "allowlist", "disabled"];
-    var KEYS = Object.keys(DEFAULTS);
-    var ENV_ONLY_KEYS = ["wsOrigins", "proxyAllowPrivate"];
-    var MAX_BODY_BACKSTOP = 500 * 1024 * 1024;
-    var MAX_WRITE_COALESCE_MS = 6e4;
-    function parseList(raw) {
-      return raw.split(",").map((s) => s.trim()).filter(Boolean);
-    }
-    function fromEnv() {
-      const env = {};
-      if (process.env.WRITE_COALESCE_MS !== void 0) {
-        const n = parseInt(process.env.WRITE_COALESCE_MS, 10);
-        if (Number.isFinite(n)) {
-          env.writeCoalesceMs = n;
-        }
-      }
-      if (process.env.WS_ORIGINS) {
-        env.wsOrigins = parseList(process.env.WS_ORIGINS);
-      }
-      if (process.env.PROXY_ALLOW_PRIVATE_HOSTS) {
-        env.proxyAllowPrivate = parseList(process.env.PROXY_ALLOW_PRIVATE_HOSTS);
-      }
-      return env;
-    }
-    var envOverrides = fromEnv();
-    function loadFile() {
-      try {
-        const parsed = JSON.parse(fs2.readFileSync(SETTINGS_FILE, "utf-8"));
-        const clean = {};
-        for (const key of KEYS) {
-          if (ENV_ONLY_KEYS.includes(key)) {
-            continue;
-          }
-          if (parsed[key] !== void 0) {
-            clean[key] = parsed[key];
-          }
-        }
-        return clean;
-      } catch {
-        return {};
-      }
-    }
-    var fileOverrides = loadFile();
-    function getAll() {
-      return { ...DEFAULTS, ...envOverrides, ...fileOverrides };
-    }
-    function get(key) {
-      return getAll()[key];
-    }
-    function update(partial) {
-      for (const [key, value] of Object.entries(partial)) {
-        if (KEYS.includes(key) && !ENV_ONLY_KEYS.includes(key)) {
-          fileOverrides[key] = value;
-        }
-      }
-      fs2.mkdirSync(path2.dirname(SETTINGS_FILE), { recursive: true });
-      fs2.writeFileSync(SETTINGS_FILE, JSON.stringify(fileOverrides, null, 2));
-      return getAll();
-    }
-    module2.exports = {
-      DEFAULTS,
-      KEYS,
-      ENV_ONLY_KEYS,
-      PROXY_MODES,
-      MAX_BODY_BACKSTOP,
-      MAX_WRITE_COALESCE_MS,
-      getAll,
-      get,
-      update
-    };
-  }
-});
-
-// apps/ignis-server/server/version.js
-var require_version = __commonJS({
-  "apps/ignis-server/server/version.js"(exports2, module2) {
-    var fs2 = require("fs");
-    var path2 = require("path");
-    var cached = null;
-    function load() {
-      if (cached) {
-        return cached;
-      }
-      try {
-        cached = JSON.parse(
-          fs2.readFileSync(path2.join(__dirname, "build-info.json"), "utf-8")
-        );
-        return cached;
-      } catch {
-      }
-      try {
-        const pkg = JSON.parse(
-          fs2.readFileSync(
-            path2.join(__dirname, "..", "..", "..", "package.json"),
-            "utf-8"
-          )
-        );
-        cached = {
-          semver: pkg.version,
-          build: "dev",
-          version: `${pkg.version}-dev`
-        };
-        return cached;
-      } catch {
-      }
-      cached = { semver: "0.0.0", build: "unknown", version: "0.0.0-unknown" };
-      return cached;
-    }
-    function getVersion2() {
-      return load().version;
-    }
-    function getSemver() {
-      return load().semver;
-    }
-    function getBuild() {
-      return load().build;
-    }
-    module2.exports = { getVersion: getVersion2, getSemver, getBuild };
-  }
-});
-
-// apps/ignis-server/server/cache-headers.js
-var require_cache_headers = __commonJS({
-  "apps/ignis-server/server/cache-headers.js"(exports2, module2) {
-    var IMMUTABLE = "public, max-age=31536000, immutable";
-    var SHORT = "public, max-age=300";
-    var ASSET_EXT = /\.(?:js|css|woff2?|ttf|otf|wasm|map)$/i;
-    function versionedSrc2(src, version) {
-      if (!version) {
-        return src;
-      }
-      return src + (src.includes("?") ? "&" : "?") + "v=" + version;
-    }
-    function cacheControlFor2(reqPath, hasVersion) {
-      if (!ASSET_EXT.test(reqPath)) {
-        return null;
-      }
-      return hasVersion ? IMMUTABLE : SHORT;
-    }
-    module2.exports = { versionedSrc: versionedSrc2, cacheControlFor: cacheControlFor2 };
-  }
-});
-
 // packages/server-core/src/write-coalescer.js
 var require_write_coalescer = __commonJS({
   "packages/server-core/src/write-coalescer.js"(exports2, module2) {
@@ -23791,6 +23600,22 @@ var require_write_coalescer = __commonJS({
           fn(absPath, err);
         } catch (e) {
           console.error("[write-coalesce] give-up subscriber threw:", e);
+        }
+      }
+    }
+    var flushSuccessSubs = /* @__PURE__ */ new Set();
+    function onFlushSuccess(fn) {
+      flushSuccessSubs.add(fn);
+      return () => {
+        flushSuccessSubs.delete(fn);
+      };
+    }
+    function emitFlushSuccess(absPath) {
+      for (const fn of flushSuccessSubs) {
+        try {
+          fn(absPath);
+        } catch (e) {
+          console.error("[write-coalesce] flush-success subscriber threw:", e);
         }
       }
     }
@@ -23839,10 +23664,13 @@ var require_write_coalescer = __commonJS({
       clearTimeout(entry.timer);
       pending.delete(absPath);
       const { data, encoding } = entry;
-      writeToDisk(absPath, data, encoding).catch((err) => {
-        console.error(`[write-coalesce] Flush failed for ${absPath}:`, err);
-        requeueFailed(absPath, entry, err);
-      });
+      writeToDisk(absPath, data, encoding).then(
+        () => emitFlushSuccess(absPath),
+        (err) => {
+          console.error(`[write-coalesce] Flush failed for ${absPath}:`, err);
+          requeueFailed(absPath, entry, err);
+        }
+      );
     }
     function scheduleFlush(absPath) {
       const entry = pending.get(absPath);
@@ -23857,6 +23685,12 @@ var require_write_coalescer = __commonJS({
         return Buffer.byteLength(data, encoding === "binary" ? "utf-8" : encoding);
       }
       return data.length || data.byteLength || 0;
+    }
+    function pendingBuffer(data, encoding) {
+      if (typeof data === "string") {
+        return Buffer.from(data, encoding === "binary" ? "utf-8" : encoding);
+      }
+      return Buffer.isBuffer(data) ? data : Buffer.from(data);
     }
     async function writeCoalesced(absPath, data, encoding) {
       const windowMs = writeCoalesceMs;
@@ -23892,6 +23726,9 @@ var require_write_coalescer = __commonJS({
       }
       return null;
     }
+    function pendingPaths() {
+      return Array.from(pending.keys());
+    }
     function cancelPending(absPath) {
       const entry = pending.get(absPath);
       if (!entry) {
@@ -23911,11 +23748,12 @@ var require_write_coalescer = __commonJS({
       const { data, encoding } = entry;
       try {
         await writeToDisk(absPath, data, encoding);
-        return true;
       } catch (e) {
         requeueFailed(absPath, entry, e);
         throw e;
       }
+      emitFlushSuccess(absPath);
+      return true;
     }
     function cancelPendingSubtree(absDir) {
       const prefix = absDir.endsWith(path2.sep) ? absDir : absDir + path2.sep;
@@ -23954,9 +23792,12 @@ var require_write_coalescer = __commonJS({
       const writes = paths.map((absPath) => {
         const entry = pending.get(absPath);
         pending.delete(absPath);
-        return writeToDisk(absPath, entry.data, entry.encoding).catch((err) => {
-          console.error(`[write-coalesce] Failed to flush ${absPath}:`, err);
-        });
+        return writeToDisk(absPath, entry.data, entry.encoding).then(
+          () => emitFlushSuccess(absPath),
+          (err) => {
+            console.error(`[write-coalesce] Failed to flush ${absPath}:`, err);
+          }
+        );
       });
       const timeout = new Promise((resolve) => {
         setTimeout(() => {
@@ -23973,16 +23814,21 @@ var require_write_coalescer = __commonJS({
       pending.clear();
       lastWriteTime.clear();
       giveUpSubs.clear();
+      flushSuccessSubs.clear();
     }
     module2.exports = {
       writeCoalesced,
       getPending,
+      estimateSize,
+      pendingBuffer,
+      pendingPaths,
       cancelPending,
       flushPending,
       cancelPendingSubtree,
       flushPendingSubtree,
       flushAll: flushAll2,
       onFlushGiveUp,
+      onFlushSuccess,
       configure,
       _reset
     };
@@ -29456,15 +29302,968 @@ var require_chokidar = __commonJS({
   }
 });
 
+// node_modules/ignore/index.js
+var require_ignore = __commonJS({
+  "node_modules/ignore/index.js"(exports2, module2) {
+    function makeArray(subject) {
+      return Array.isArray(subject) ? subject : [subject];
+    }
+    var UNDEFINED = void 0;
+    var EMPTY = "";
+    var SPACE = " ";
+    var ESCAPE = "\\";
+    var REGEX_LITERAL_SPECIAL = /[.*+?()[\]{}^$|\\/]/;
+    var REGEX_TEST_BLANK_LINE = /^\uFEFF? *$/;
+    var REGEX_INVALID_TRAILING_BACKSLASH = /(?:[^\\]|^)\\$/;
+    var REGEX_REPLACE_LEADING_EXCAPED_EXCLAMATION = /^\\!/;
+    var REGEX_REPLACE_LEADING_EXCAPED_HASH = /^\\#/;
+    var REGEX_SPLITALL_CRLF = /\r?\n/g;
+    var DOUBLE_SLASH = "//";
+    var SLASH_CODE = 47;
+    var DOT_CODE = 46;
+    var SLASH = "/";
+    var TMP_KEY_IGNORE = "node-ignore";
+    if (typeof Symbol !== "undefined") {
+      TMP_KEY_IGNORE = Symbol.for("node-ignore");
+    }
+    var KEY_IGNORE = TMP_KEY_IGNORE;
+    var define2 = (object, key, value) => {
+      Object.defineProperty(object, key, { value });
+      return value;
+    };
+    var RETURN_FALSE = () => false;
+    var cleanRangeBackSlash = (slashes) => {
+      const { length } = slashes;
+      return slashes.slice(0, length - length % 2);
+    };
+    var POSIX_CLASSES = {
+      alnum: "0-9A-Za-z",
+      alpha: "A-Za-z",
+      blank: " \\t",
+      cntrl: "\\x00-\\x1f\\x7f",
+      digit: "0-9",
+      graph: "!-.0-~",
+      lower: "a-z",
+      print: " -.0-~",
+      punct: "!-.:-@\\[-`{-~",
+      // git's `sane-ctype.h` classifies \v and \f as control, not space,
+      //   unlike C's `isspace`
+      space: " \\t\\n\\r",
+      upper: "A-Z",
+      xdigit: "0-9A-Fa-f"
+    };
+    var CLASS_MEMBERS_TO_ESCAPE = "\\]^-[";
+    var escapeMember = (char) => CLASS_MEMBERS_TO_ESCAPE.indexOf(char) < 0 ? char : ESCAPE + char;
+    var NON_SLASH = "(?!\\/)";
+    var classSource = (negated, body) => {
+      if (negated) {
+        return `[^\\/${body}]`;
+      }
+      const source = `[${body}]`;
+      return new RegExp(source).test("/") ? NON_SLASH + source : source;
+    };
+    var scanBracket = (pattern, start) => {
+      const { length } = pattern;
+      let index = start + 1;
+      let negated = EMPTY;
+      const lead = pattern[index];
+      if (lead === "!" || lead === "^") {
+        negated = "^";
+        index++;
+      }
+      let body = EMPTY;
+      let prev = EMPTY;
+      for (; ; ) {
+        const char = pattern[index];
+        if (char === UNDEFINED) {
+          return null;
+        }
+        if (char === ESCAPE) {
+          const escaped = pattern[index + 1];
+          if (escaped === UNDEFINED) {
+            return null;
+          }
+          body += escapeMember(escaped);
+          prev = escaped;
+          index++;
+        } else if (char === "-" && prev && index + 1 < length && pattern[index + 1] !== "]") {
+          index++;
+          let to = pattern[index];
+          if (to === ESCAPE) {
+            to = pattern[index += 1];
+          }
+          if (prev <= to) {
+            body += `-${escapeMember(to)}`;
+          }
+          prev = EMPTY;
+        } else if (char === "[" && pattern[index + 1] === ":") {
+          const nameStart = index + 2;
+          let end = nameStart;
+          while (end < length && pattern[end] !== "]") {
+            end++;
+          }
+          if (end === length) {
+            return null;
+          }
+          if (end > nameStart && pattern[end - 1] === ":") {
+            const expanded = POSIX_CLASSES[pattern.slice(nameStart, end - 1)];
+            if (expanded === UNDEFINED) {
+              return null;
+            }
+            body += expanded;
+            prev = EMPTY;
+            index = end;
+          } else {
+            body += escapeMember("[");
+            prev = "[";
+            index = nameStart - 2;
+          }
+        } else {
+          body += escapeMember(char);
+          prev = char;
+        }
+        index++;
+        if (pattern[index] === "]") {
+          return {
+            end: index,
+            source: classSource(negated, body)
+          };
+        }
+      }
+    };
+    var NEVER_MATCH = "[]";
+    var PLACEHOLDER = "\0";
+    var REGEX_RESTORE_PLACEHOLDER = new RegExp(
+      `${PLACEHOLDER}(\\d+)${PLACEHOLDER}`,
+      "g"
+    );
+    var TRAILING_WILDCARD = "\uE000";
+    var extractBrackets = (pattern) => {
+      const sources = [];
+      const hold = (source) => `${PLACEHOLDER}${sources.push(source) - 1}${PLACEHOLDER}`;
+      const { length } = pattern;
+      let out = EMPTY;
+      let index = 0;
+      while (index < length) {
+        const char = pattern[index];
+        if (char === ESCAPE) {
+          const escaped = pattern[index + 1];
+          if (escaped === "*" || escaped === "[" || escaped === SPACE || escaped === ESCAPE) {
+            out += pattern.slice(index, index + 2);
+          } else {
+            out += hold(
+              REGEX_LITERAL_SPECIAL.test(escaped) ? ESCAPE + escaped : escaped
+            );
+          }
+          index += 2;
+        } else if (char === PLACEHOLDER) {
+          out += hold(`[${PLACEHOLDER}]`);
+          index++;
+        } else if (char === "[") {
+          const scanned = scanBracket(pattern, index);
+          if (scanned === null) {
+            out += hold(NEVER_MATCH);
+            index = length;
+          } else {
+            out += hold(scanned.source);
+            index = scanned.end + 1;
+          }
+        } else {
+          out += char;
+          index++;
+        }
+      }
+      return {
+        source: out,
+        sources
+      };
+    };
+    var DIRECT = null;
+    var REGEX_INNER_SLASH = /\/(?!$)/;
+    var REPLACERS = [
+      [
+        // Remove BOM
+        // TODO:
+        // Other similar zero-width characters?
+        /^\uFEFF/,
+        () => EMPTY,
+        "\uFEFF"
+      ],
+      [
+        // A trailing line terminator, left on when a whole file's contents are
+        //   added as one pattern rather than split into lines. git never sees one
+        //   -- it reads a `.gitignore` line by line -- so it is not part of the
+        //   pattern and is dropped here, apart from the trailing-space trimming,
+        //   which follows git in touching spaces and nothing else.
+        /[\r\n]+$/,
+        () => EMPTY
+      ],
+      // > Trailing spaces are ignored unless they are quoted with backslash ("\")
+      [
+        // Only spaces, never tabs or other whitespace: git trims a trailing run
+        //   of `' '` and nothing else (dir.c, `trim_trailing_spaces`, a single
+        //   `case ' '`), so a pattern ending in a tab keeps it as a literal.
+        // (a\ ) -> (a )
+        // (a  ) -> (a)
+        // (a ) -> (a)
+        // (a \ ) -> (a  )
+        /((?:\\\\)*?)(\\? +)$/,
+        (_2, m1, m2) => m1 + (m2.indexOf("\\") === 0 ? SPACE : EMPTY)
+      ],
+      // Replace (\ ) with ' '
+      // Only a space: an escaped tab or other whitespace is already a literal by
+      //   the time it reaches here, and a bare tab must be left as one, not turned
+      //   into a space.
+      // (\ ) -> ' '
+      // (\\ ) -> '\\ '
+      // (\\\ ) -> '\\ '
+      [
+        /(\\+?) /g,
+        (_2, m1) => {
+          const { length } = m1;
+          return m1.slice(0, length - length % 2) + SPACE;
+        }
+      ],
+      // Escape metacharacters
+      // which is written down by users but means special for regular expressions.
+      // > There are 12 characters with special meanings:
+      // > - the backslash \,
+      // > - the caret ^,
+      // > - the dollar sign $,
+      // > - the period or dot .,
+      // > - the vertical bar or pipe symbol |,
+      // > - the question mark ?,
+      // > - the asterisk or star *,
+      // > - the plus sign +,
+      // > - the opening parenthesis (,
+      // > - the closing parenthesis ),
+      // > - and the opening square bracket [,
+      // > - the opening curly brace {,
+      // > These special characters are often called "metacharacters".
+      [
+        /[\\$.|*+(){^]/g,
+        (match) => `\\${match}`
+      ],
+      [
+        // > a question mark (?) matches a single character
+        /(?!\\)\?/g,
+        () => "[^/]",
+        "?"
+      ],
+      // leading slash
+      [
+        // > A leading slash matches the beginning of the pathname.
+        // > For example, "/*.c" matches "cat-file.c" but not "mozilla-sha1/sha1.c".
+        // A leading slash matches the beginning of the pathname
+        /^\//,
+        () => "^",
+        SLASH
+      ],
+      // replace special metacharacter slash after the leading slash
+      [
+        /\//g,
+        () => "\\/",
+        SLASH
+      ],
+      [
+        // > A leading "**" followed by a slash means match in all directories.
+        // > For example, "**/foo" matches file or directory "foo" anywhere,
+        // > the same as pattern "foo".
+        // > "**/foo/bar" matches file or directory "bar" anywhere that is directly
+        // >   under directory "foo".
+        // Notice that the '*'s have been replaced as '\\*'
+        /^\^*(?:\\\*\\\*\\\/)+/,
+        // '**/foo' <-> 'foo'
+        () => "^(?:.*\\/)?",
+        "*"
+      ],
+      // starting
+      [
+        // there will be no leading '/'
+        //   (which has been replaced by section "leading slash")
+        // If starts with '**', adding a '^' to the regular expression also works
+        DIRECT,
+        (source, pattern) => {
+          if (!source || source[0] === "^") {
+            return source;
+          }
+          const anchor = !REGEX_INNER_SLASH.test(pattern) ? "(?:^|\\/)" : "^";
+          return anchor + source;
+        }
+      ],
+      // two globstars
+      [
+        // Use lookahead assertions so that we could match more than one `'/**'`
+        /\\\/\\\*\\\*(?=\\\/|$)/g,
+        // Zero, one or several directories
+        // should not use '*', or it will be replaced by the next replacer
+        // Check if it is not the last `'/**'`
+        (_2, index, str) => index + 6 < str.length ? str.slice(index + 6) === "\\/" ? "(?:\\/[^\\/]+)+" : "(?:\\/[^\\/]+)*" : "\\/.+",
+        "*"
+      ],
+      // normal intermediate wildcards
+      [
+        // Never replace escaped '*'
+        // ignore rule '\*' will match the path '*'
+        // 'abc.*/' -> go
+        // 'abc.*'  -> skip this rule,
+        //    coz trailing single wildcard will be handed by [trailing wildcard]
+        /(^|[^\\]+)(\\\*)+(?=.+)/g,
+        // '*.js' matches '.js'
+        // '*.js' doesn't match 'abc'
+        (_2, p1, p2) => {
+          const unescaped = p2.replace(/\\\*/g, "[^\\/]*");
+          return p1 + unescaped;
+        },
+        "*"
+      ],
+      // trailing wildcard, held apart from a literal star
+      [
+        // The step above leaves a trailing `*` alone, so a single `\*` is all that
+        //   can be left at the end here. Whether it is a wildcard or a literal
+        //   turns on the backslashes the user put in front of it: the escaper has
+        //   since doubled every one, so what stands here is those `2N` doubled
+        //   backslashes and then the star's own escape. An even number of the
+        //   original `N` leaves the star unescaped -- a wildcard -- and an odd
+        //   number escapes it -- a literal. This runs while the two are still
+        //   distinct, before the unescape steps below collapse the literal onto
+        //   the very `\*` a wildcard leaves behind.
+        /(^|[^\\])((?:\\\\)*)\\\*$/,
+        (match, p1, p2) => (
+          // `p2` holds the doubled user backslashes; half of them is `N`.
+          p2.length / 2 % 2 === 0 ? p1 + p2 + TRAILING_WILDCARD : match
+        ),
+        "*"
+      ],
+      [
+        // unescape, revert step 3 except for back slash
+        // For example, if a user escape a '\\*',
+        // after step 3, the result will be '\\\\\\*'
+        /\\\\\\(?=[$.|*+(){^])/g,
+        () => ESCAPE,
+        ESCAPE + ESCAPE
+      ],
+      [
+        // '\\\\' -> '\\'
+        /\\\\/g,
+        () => ESCAPE,
+        ESCAPE + ESCAPE
+      ],
+      [
+        // Every real bracket expression -- POSIX classes included -- has already
+        //   been held aside by `extractBrackets`, so the only `[` left in the
+        //   pattern is an escaped, literal one.
+        // `\` is escaped by step 3
+        /\\\[([^\]/]*?)(\\*)($|\])/g,
+        // '\\[bar]' -> '\\\\[bar\\]'
+        (match, range, endEscape, close) => `\\[${range}${cleanRangeBackSlash(endEscape)}${close}`,
+        "["
+      ],
+      // ending
+      [
+        // 'js' will not match 'js.'
+        // 'ab' will not match 'abc'
+        DIRECT,
+        // WTF!
+        // https://git-scm.com/docs/gitignore
+        // changes in [2.22.1](https://git-scm.com/docs/gitignore/2.22.1)
+        // which re-fixes #24, #38
+        // > If there is a separator at the end of the pattern then the pattern
+        // > will only match directories, otherwise the pattern can match both
+        // > files and directories.
+        // 'js*' will not match 'a.js'
+        // 'js/' will not match 'a.js'
+        // 'js' will match 'a.js' and 'a.js/'
+        (source) => {
+          const last = source[source.length - 1];
+          if (!last || last === TRAILING_WILDCARD) {
+            return source;
+          }
+          return last === SLASH ? `${source}$` : `${source}(?=$|\\/$)`;
+        }
+      ]
+    ];
+    var REGEX_REPLACE_TRAILING_WILDCARD = /(^|\\\/)?\uE000$/;
+    var MODE_IGNORE = "regex";
+    var MODE_CHECK_IGNORE = "checkRegex";
+    var UNDERSCORE = "_";
+    var TRAILING_WILD_CARD_REPLACERS = {
+      [MODE_IGNORE](_2, p1) {
+        const prefix = p1 ? `${p1}[^/]+` : "[^/]*";
+        return `${prefix}(?=$|\\/$)`;
+      },
+      [MODE_CHECK_IGNORE](_2, p1) {
+        const prefix = p1 ? `${p1}[^/]*` : "[^/]*";
+        return `${prefix}(?=$|\\/$)`;
+      }
+    };
+    var WILDCARD = "[^\\/]*";
+    var pinWildcards = (source) => {
+      if (source.indexOf(WILDCARD) < 0) {
+        return source;
+      }
+      const tokens = [];
+      const { length } = source;
+      let index = 0;
+      while (index < length) {
+        const char = source[index];
+        if (source.startsWith(WILDCARD, index)) {
+          tokens.push({ wildcard: true });
+          index += WILDCARD.length;
+        } else if (char === "[") {
+          let end = index + 1;
+          if (source[end] === "^") {
+            end++;
+          }
+          if (source[end] === "]") {
+            end++;
+          }
+          while (end < length && source[end] !== "]") {
+            end += source[end] === ESCAPE ? 2 : 1;
+          }
+          end++;
+          tokens.push({ single: source.slice(index, end) });
+          index = end;
+        } else if (char === ESCAPE) {
+          tokens.push({ single: source.slice(index, index + 2) });
+          index += 2;
+        } else if (char === "(") {
+          let depth = 0;
+          let end = index;
+          do {
+            if (source[end] === ESCAPE) {
+              end++;
+            } else if (source[end] === "(") {
+              depth++;
+            } else if (source[end] === ")") {
+              depth--;
+            }
+            end++;
+          } while (end < length && depth > 0);
+          if ("*+?".indexOf(source[end]) >= 0) {
+            end++;
+          }
+          tokens.push({ boundary: source.slice(index, end) });
+          index = end;
+        } else if (char === "^" || char === "$") {
+          tokens.push({ boundary: char });
+          index++;
+        } else {
+          tokens.push({ single: char });
+          index++;
+        }
+      }
+      let out = EMPTY;
+      let run = [];
+      const flush = () => {
+        let lastWildcard;
+        run.forEach((token, at) => {
+          if (token.wildcard) {
+            lastWildcard = at;
+          }
+        });
+        run.forEach((token, at) => {
+          if (!token.wildcard) {
+            out += token.single;
+            return;
+          }
+          out += at === lastWildcard ? WILDCARD : `(?:(?!${run[at + 1].single})[^\\/])*`;
+        });
+        run = [];
+      };
+      tokens.forEach((token) => {
+        if (token.boundary === void 0) {
+          run.push(token);
+          return;
+        }
+        flush();
+        out += token.boundary;
+      });
+      flush();
+      return out;
+    };
+    var makeRegexPrefix = (pattern) => {
+      const { source, sources } = extractBrackets(pattern);
+      const replaced = REPLACERS.reduce(
+        // A pass whose matcher finds nothing hands back the very string it was
+        //   given, so asking first costs a search and saves a rewrite. Ten of the
+        //   fifteen passes never fire for a typical .gitignore line, and between
+        //   them they were 45% of this chain.
+        (prev, [matcher, replacer, required]) => {
+          if (matcher === DIRECT) {
+            return replacer(prev, pattern);
+          }
+          if (required !== UNDEFINED && prev.indexOf(required) < 0) {
+            return prev;
+          }
+          return matcher.test(prev) ? prev.replace(matcher, replacer.bind(pattern)) : prev;
+        },
+        source
+      );
+      return sources.length ? replaced.replace(
+        REGEX_RESTORE_PLACEHOLDER,
+        (match, index) => sources[index]
+      ) : replaced;
+    };
+    var matchesBasename = (body) => {
+      const index = body.indexOf(SLASH);
+      return index < 0 || index === body.length - 1;
+    };
+    var basenameOf = (path2) => {
+      const end = path2.length - 1;
+      const index = path2.lastIndexOf(
+        SLASH,
+        path2[end] === SLASH ? end - 1 : end
+      );
+      return index < 0 ? path2 : path2.slice(index + 1);
+    };
+    var parentOf = (path2) => {
+      if (path2.charCodeAt(0) === SLASH_CODE || path2.indexOf(DOUBLE_SLASH) >= 0) {
+        const slices = path2.split(SLASH).filter(Boolean);
+        slices.pop();
+        return slices.length ? slices.join(SLASH) + SLASH : EMPTY;
+      }
+      const end = path2.length - 1;
+      const cut = path2.lastIndexOf(
+        SLASH,
+        path2.charCodeAt(end) === SLASH_CODE ? end - 1 : end
+      );
+      return cut < 0 ? EMPTY : path2.slice(0, cut + 1);
+    };
+    var isString = (subject) => typeof subject === "string";
+    var checkPattern = (pattern) => pattern && isString(pattern) && !REGEX_TEST_BLANK_LINE.test(pattern) && !REGEX_INVALID_TRAILING_BACKSLASH.test(pattern) && pattern.indexOf("#") !== 0;
+    var splitPattern = (pattern) => pattern.split(REGEX_SPLITALL_CRLF).filter(Boolean);
+    var IgnoreRule = class {
+      constructor(pattern, mark, body, ignoreCase, negative, prefix) {
+        this.pattern = pattern;
+        this.mark = mark;
+        this.negative = negative;
+        define2(this, "body", body);
+        define2(this, "ignoreCase", ignoreCase);
+        define2(this, "regexPrefix", prefix);
+      }
+      // Worked out on first use and kept behind an own property, the way `regex`
+      //   caches itself in `_regex`. Deciding it in the constructor instead would
+      //   add a fourth `defineProperty` to every rule ever built, which cost 4% of
+      //   every compile -- including the compiles of rules that are never matched
+      //   against anything.
+      get _basenameOnly() {
+        return define2(this, "_basenameOnly", matchesBasename(this.body));
+      }
+      get regex() {
+        const key = UNDERSCORE + MODE_IGNORE;
+        if (this[key]) {
+          return this[key];
+        }
+        return this._make(MODE_IGNORE, key);
+      }
+      get checkRegex() {
+        const key = UNDERSCORE + MODE_CHECK_IGNORE;
+        if (this[key]) {
+          return this[key];
+        }
+        return this._make(MODE_CHECK_IGNORE, key);
+      }
+      _make(mode, key) {
+        const str = pinWildcards(this.regexPrefix.replace(
+          REGEX_REPLACE_TRAILING_WILDCARD,
+          // It does not need to bind pattern
+          TRAILING_WILD_CARD_REPLACERS[mode]
+        ));
+        const regex = this.ignoreCase ? new RegExp(str, "i") : new RegExp(str);
+        return define2(this, key, regex);
+      }
+    };
+    var createRule = ({
+      pattern,
+      mark
+    }, ignoreCase) => {
+      let negative = false;
+      let body = pattern;
+      if (body.indexOf("!") === 0) {
+        negative = true;
+        body = body.substr(1);
+      }
+      body = body.replace(REGEX_REPLACE_LEADING_EXCAPED_EXCLAMATION, "!").replace(REGEX_REPLACE_LEADING_EXCAPED_HASH, "#");
+      const regexPrefix = makeRegexPrefix(body);
+      return new IgnoreRule(
+        pattern,
+        mark,
+        body,
+        ignoreCase,
+        negative,
+        regexPrefix
+      );
+    };
+    var RuleManager = class {
+      constructor(ignoreCase) {
+        this._ignoreCase = ignoreCase;
+        this._rules = [];
+        this._basenameCount = 0;
+      }
+      _add(pattern) {
+        if (pattern && pattern[KEY_IGNORE]) {
+          this._rules = this._rules.concat(pattern._rules._rules);
+          this._basenameCount += pattern._rules._basenameCount;
+          this._added = true;
+          return;
+        }
+        if (isString(pattern)) {
+          pattern = {
+            pattern
+          };
+        }
+        if (checkPattern(pattern.pattern)) {
+          const rule = createRule(pattern, this._ignoreCase);
+          this._added = true;
+          this._rules.push(rule);
+          if (matchesBasename(rule.body)) {
+            this._basenameCount++;
+          }
+        }
+      }
+      // @param {Array<string> | string | Ignore} pattern
+      add(pattern) {
+        this._added = false;
+        makeArray(
+          isString(pattern) ? splitPattern(pattern) : pattern
+        ).forEach(this._add, this);
+        return this._added;
+      }
+      // Test one single path without recursively checking parent directories
+      //
+      // - checkUnignored `boolean` whether should check if the path is unignored,
+      //   setting `checkUnignored` to `false` could reduce additional
+      //   path matching.
+      // - check `string` either `MODE_IGNORE` or `MODE_CHECK_IGNORE`
+      // @returns {TestResult} true if a file is ignored
+      test(path2, checkUnignored, mode) {
+        let ignored = false;
+        let unignored = false;
+        let matchedRule;
+        const rules = this._rules;
+        const { length } = rules;
+        const shortcut = this._basenameCount * 2 >= length;
+        const basename = shortcut ? basenameOf(path2) : path2;
+        for (let index = 0; index < length; index++) {
+          const rule = rules[index];
+          const { negative } = rule;
+          const skip = unignored === negative && ignored !== unignored || negative && !ignored && !unignored && !checkUnignored;
+          if (!skip && rule[mode].test(
+            shortcut && rule._basenameOnly ? basename : path2
+          )) {
+            ignored = !negative;
+            unignored = negative;
+            matchedRule = negative ? UNDEFINED : rule;
+          }
+        }
+        const ret = {
+          ignored,
+          unignored
+        };
+        if (matchedRule) {
+          ret.rule = matchedRule;
+        }
+        return ret;
+      }
+    };
+    var throwError = (message, Ctor) => {
+      throw new Ctor(message);
+    };
+    var checkPath = (path2, originalPath, doThrow) => {
+      if (!isString(path2)) {
+        return doThrow(
+          `path must be a string, but got \`${originalPath}\``,
+          TypeError
+        );
+      }
+      if (!path2) {
+        return doThrow(`path must not be empty`, TypeError);
+      }
+      if (checkPath.isNotRelative(path2)) {
+        const r = "`path.relative()`d";
+        return doThrow(
+          `path should be a ${r} string, but got "${originalPath}"`,
+          RangeError
+        );
+      }
+      return true;
+    };
+    var isNotRelative = (path2) => {
+      const first = path2.charCodeAt(0);
+      if (first === SLASH_CODE) {
+        return true;
+      }
+      if (first !== DOT_CODE) {
+        return false;
+      }
+      if (path2.length === 1) {
+        return true;
+      }
+      const second = path2.charCodeAt(1);
+      if (second === SLASH_CODE) {
+        return true;
+      }
+      if (second !== DOT_CODE) {
+        return false;
+      }
+      return path2.length === 2 || path2.charCodeAt(2) === SLASH_CODE;
+    };
+    checkPath.isNotRelative = isNotRelative;
+    checkPath.convert = (p) => p;
+    var Ignore = class {
+      constructor({
+        ignorecase = true,
+        ignoreCase = ignorecase,
+        allowRelativePaths = false
+      } = {}) {
+        define2(this, KEY_IGNORE, true);
+        this._rules = new RuleManager(ignoreCase);
+        this._strictPathCheck = !allowRelativePaths;
+        this._initCache();
+      }
+      _initCache() {
+        this._ignoreCache = /* @__PURE__ */ Object.create(null);
+        this._testCache = /* @__PURE__ */ Object.create(null);
+      }
+      add(pattern) {
+        if (this._rules.add(pattern)) {
+          this._initCache();
+        }
+        return this;
+      }
+      // legacy
+      addPattern(pattern) {
+        return this.add(pattern);
+      }
+      // @returns {TestResult}
+      _test(originalPath, cache, checkUnignored) {
+        const path2 = originalPath && checkPath.convert(originalPath);
+        checkPath(
+          path2,
+          originalPath,
+          this._strictPathCheck ? throwError : RETURN_FALSE
+        );
+        return this._t(path2, cache, checkUnignored);
+      }
+      checkIgnore(path2) {
+        if (path2.charCodeAt(path2.length - 1) !== SLASH_CODE) {
+          return this.test(path2);
+        }
+        const parentPath = parentOf(path2);
+        if (parentPath) {
+          const parent = this._t(parentPath, this._testCache, true);
+          if (parent.ignored) {
+            return parent;
+          }
+        }
+        return this._rules.test(path2, false, MODE_CHECK_IGNORE);
+      }
+      _t(path2, cache, checkUnignored) {
+        if (path2 in cache) {
+          return cache[path2];
+        }
+        const parentPath = parentOf(path2);
+        const parent = parentPath ? this._t(parentPath, cache, checkUnignored) : UNDEFINED;
+        return cache[path2] = parent && parent.ignored ? parent : this._rules.test(path2, checkUnignored, MODE_IGNORE);
+      }
+      ignores(path2) {
+        return this._test(path2, this._ignoreCache, false).ignored;
+      }
+      createFilter() {
+        return (path2) => !this.ignores(path2);
+      }
+      filter(paths) {
+        return makeArray(paths).filter(this.createFilter());
+      }
+      // @returns {TestResult}
+      test(path2) {
+        return this._test(path2, this._testCache, true);
+      }
+    };
+    var factory = (options) => new Ignore(options);
+    var isPathValid = (path2) => checkPath(path2 && checkPath.convert(path2), path2, RETURN_FALSE);
+    var setupWindows = () => {
+      const makePosix = (str) => /^\\\\\?\\/.test(str) || /["<>|\u0000-\u001F]+/u.test(str) ? str : str.replace(/\\/g, "/");
+      checkPath.convert = makePosix;
+      const REGEX_TEST_WINDOWS_PATH_ABSOLUTE = /^[a-z]:\//i;
+      checkPath.isNotRelative = (path2) => REGEX_TEST_WINDOWS_PATH_ABSOLUTE.test(path2) || isNotRelative(path2);
+    };
+    if (
+      // Detect `process` so that it can run in browsers.
+      typeof process !== "undefined" && process.platform === "win32"
+    ) {
+      setupWindows();
+    }
+    module2.exports = factory;
+    factory.default = factory;
+    module2.exports.isPathValid = isPathValid;
+    define2(module2.exports, Symbol.for("setupWindows"), setupWindows);
+  }
+});
+
+// packages/server-core/src/path-utils.js
+var require_path_utils = __commonJS({
+  "packages/server-core/src/path-utils.js"(exports2, module2) {
+    var path2 = require("path");
+    var fs2 = require("fs");
+    function encodeContentDispositionFilename(filename) {
+      const hasNonASCII = /[^\x00-\x7F]/.test(filename);
+      const escapedFilename = filename.replace(/["\\]/g, function(match) {
+        if (match === '"')
+          return '\\"';
+        if (match === "\\")
+          return "\\\\";
+        return match;
+      });
+      const sanitizedFilename = escapedFilename.replace(/[\x00-\x1F\x7F]/g, "");
+      if (!hasNonASCII) {
+        return `attachment; filename="${sanitizedFilename}"`;
+      }
+      const encodedFilename = encodeURIComponent(filename).replace(/['()]/g, function(c) {
+        return "%" + c.charCodeAt(0).toString(16).toUpperCase();
+      }).replace(/\*/g, "%2A");
+      const asciiFallback = filename.replace(/[^\x00-\x7F]/g, "_").replace(/["\\]/g, function(match) {
+        if (match === '"')
+          return '\\"';
+        if (match === "\\")
+          return "\\\\";
+        return match;
+      });
+      return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`;
+    }
+    function canonicalize(target, depth = 0) {
+      if (depth > 40) {
+        return null;
+      }
+      let current = target;
+      const tail = [];
+      while (true) {
+        try {
+          fs2.lstatSync(current);
+          break;
+        } catch (e) {
+          if (e.code !== "ENOENT") {
+            return null;
+          }
+          const parent = path2.dirname(current);
+          if (parent === current) {
+            return null;
+          }
+          tail.push(path2.basename(current));
+          current = parent;
+        }
+      }
+      let real;
+      try {
+        real = fs2.realpathSync(current);
+      } catch (e) {
+        if (e.code !== "ENOENT") {
+          return null;
+        }
+        let linkTarget;
+        try {
+          linkTarget = fs2.readlinkSync(current);
+        } catch {
+          return null;
+        }
+        real = canonicalize(
+          path2.resolve(path2.dirname(current), linkTarget),
+          depth + 1
+        );
+        if (real === null) {
+          return null;
+        }
+      }
+      return tail.length ? path2.join(real, ...tail.reverse()) : real;
+    }
+    function isWithin(child, base) {
+      if (child === base) {
+        return true;
+      }
+      const prefix = base.endsWith(path2.sep) ? base : base + path2.sep;
+      return child.startsWith(prefix);
+    }
+    function resolveVaultPath2(vaultRoot, relativePath) {
+      if (relativePath === null || relativePath === void 0) {
+        return null;
+      }
+      const cleaned = relativePath.replace(/^\/+/, "");
+      const resolvedRoot = path2.resolve(vaultRoot);
+      const resolved = path2.resolve(resolvedRoot, cleaned);
+      if (!isWithin(resolved, resolvedRoot)) {
+        return null;
+      }
+      const realBase = canonicalize(resolvedRoot);
+      const realTarget = canonicalize(resolved);
+      if (realBase === null || realTarget === null) {
+        return null;
+      }
+      if (!isWithin(realTarget, realBase)) {
+        return null;
+      }
+      return resolved;
+    }
+    function toVaultRel(p) {
+      return String(p == null ? "" : p).split(path2.sep).join("/").replace(/^\.\//, "").replace(/^\/+|\/+$/g, "");
+    }
+    function fromVaultRel(base, rel) {
+      return rel ? path2.join(base, rel.split("/").join(path2.sep)) : base;
+    }
+    module2.exports = {
+      encodeContentDispositionFilename,
+      resolveVaultPath: resolveVaultPath2,
+      toVaultRel,
+      fromVaultRel
+    };
+  }
+});
+
 // packages/server-core/src/watcher.js
 var require_watcher = __commonJS({
   "packages/server-core/src/watcher.js"(exports2, module2) {
     var chokidar = require_chokidar();
     var path2 = require("path");
+    var ignore = require_ignore();
+    var { toVaultRel } = require_path_utils();
+    var DEFAULT_IGNORED_PATHS = [".git"];
+    function compileIgnoreList(patterns) {
+      const lines = patterns.map(
+        (line) => line.startsWith("#") ? "\\" + line : line
+      );
+      return ignore({ allowRelativePaths: true }).add(lines);
+    }
+    var ignoreList = compileIgnoreList(DEFAULT_IGNORED_PATHS);
+    function canCompileIgnorePattern(pattern) {
+      try {
+        compileIgnoreList([pattern]).ignores("a/b");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    function configure(opts) {
+      if (Array.isArray(opts?.ignoredPaths)) {
+        ignoreList = compileIgnoreList(opts.ignoredPaths);
+      }
+    }
+    function isIgnoredPath(p) {
+      const rel = toVaultRel(p);
+      if (rel === "") {
+        return false;
+      }
+      try {
+        return ignoreList.ignores(rel);
+      } catch {
+        return false;
+      }
+    }
     var IDLE_STOP_MS = 10 * 60 * 1e3;
     var idleStopMs = IDLE_STOP_MS;
     var vaultWatchers = /* @__PURE__ */ new Map();
     var globalListeners = /* @__PURE__ */ new Set();
+    var startListeners = /* @__PURE__ */ new Set();
+    var rebuildListeners = /* @__PURE__ */ new Set();
     function cancelIdleStop(entry) {
       clearTimeout(entry.idleTimer);
       entry.idleTimer = null;
@@ -29475,11 +30274,41 @@ var require_watcher = __commonJS({
         0
       );
     }
+    function notifyStart(vaultId, info) {
+      for (const fn of startListeners) {
+        try {
+          fn(vaultId, info);
+        } catch (e) {
+          console.error("[watcher] Start listener error:", e);
+        }
+      }
+    }
+    function notifyRebuild(vaultId) {
+      for (const fn of rebuildListeners) {
+        try {
+          fn(vaultId);
+        } catch (e) {
+          console.error("[watcher] Rebuild listener error:", e);
+        }
+      }
+    }
+    function isDead(entry) {
+      return entry.ready && countTrackedPaths(entry.watcher.getWatched()) === 0;
+    }
     function startWatching(vaultId, vaultPath) {
       const existing = vaultWatchers.get(vaultId);
+      let rebuilt = false;
       if (existing) {
-        cancelIdleStop(existing);
-        return existing;
+        if (!isDead(existing)) {
+          cancelIdleStop(existing);
+          return existing;
+        }
+        console.warn(
+          `[watcher] Rebuilding watcher tracking no paths on vault: ${vaultId}`
+        );
+        stopWatching(vaultId);
+        notifyRebuild(vaultId);
+        rebuilt = true;
       }
       const watcher2 = chokidar.watch(vaultPath, {
         persistent: true,
@@ -29488,10 +30317,7 @@ var require_watcher = __commonJS({
           stabilityThreshold: 300,
           pollInterval: 100
         },
-        ignored: [
-          /(^|[/\\])\.git([/\\]|$)/
-          // .git directories
-        ]
+        ignored: (fullPath) => isIgnoredPath(path2.relative(vaultPath, fullPath))
       });
       const entry = {
         watcher: watcher2,
@@ -29504,7 +30330,7 @@ var require_watcher = __commonJS({
         enospc: false
       };
       function emit(type, fullPath, stat) {
-        const rel = path2.relative(vaultPath, fullPath).replace(/\\/g, "/");
+        const rel = toVaultRel(path2.relative(vaultPath, fullPath));
         const event = { type, path: rel };
         if (stat) {
           event.stat = {
@@ -29565,12 +30391,13 @@ var require_watcher = __commonJS({
           console.log(
             `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked`
           );
-          return;
+        } else {
+          const hint = entry.enospc ? " Raise fs.inotify.max_user_watches." : "";
+          console.warn(
+            `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked, ${entry.errorCount} errors, ~${tracked - entry.errorCount} watched.${hint}`
+          );
         }
-        const hint = entry.enospc ? " Raise fs.inotify.max_user_watches." : "";
-        console.warn(
-          `[watcher] Ready on vault "${vaultId}": ${tracked} paths tracked, ${entry.errorCount} errors, ~${tracked - entry.errorCount} watched.${hint}`
-        );
+        notifyStart(vaultId, { rebuilt, tracked, errors: entry.errorCount });
       });
       vaultWatchers.set(vaultId, entry);
       entry.idleTimer = setTimeout(() => stopWatching(vaultId), idleStopMs);
@@ -29590,11 +30417,35 @@ var require_watcher = __commonJS({
         console.error(`[watcher] Close failed on vault "${vaultId}":`, e.message);
       });
     }
+    function stopAll() {
+      const closings = [];
+      for (const vaultId of vaultWatchers.keys()) {
+        closings.push(stopWatching(vaultId));
+        notifyRebuild(vaultId);
+      }
+      return Promise.all(closings);
+    }
+    function isWatching(vaultId) {
+      const entry = vaultWatchers.get(vaultId);
+      return !!entry && entry.ready;
+    }
     function addGlobalListener(fn) {
       globalListeners.add(fn);
     }
     function removeGlobalListener(fn) {
       globalListeners.delete(fn);
+    }
+    function onWatcherStart(fn) {
+      startListeners.add(fn);
+    }
+    function offWatcherStart(fn) {
+      startListeners.delete(fn);
+    }
+    function onWatcherRebuild(fn) {
+      rebuildListeners.add(fn);
+    }
+    function offWatcherRebuild(fn) {
+      rebuildListeners.delete(fn);
     }
     function addListener(vaultId, fn) {
       const entry = vaultWatchers.get(vaultId);
@@ -29622,15 +30473,27 @@ var require_watcher = __commonJS({
         closings.push(stopWatching(vaultId));
       }
       globalListeners.clear();
+      startListeners.clear();
+      rebuildListeners.clear();
+      ignoreList = compileIgnoreList(DEFAULT_IGNORED_PATHS);
       return Promise.all(closings);
     }
     module2.exports = {
+      configure,
       startWatching,
       stopWatching,
+      stopAll,
+      isWatching,
+      isIgnoredPath,
+      canCompileIgnorePattern,
       addListener,
       removeListener,
       addGlobalListener,
       removeGlobalListener,
+      onWatcherStart,
+      offWatcherStart,
+      onWatcherRebuild,
+      offWatcherRebuild,
       _setIdleStopMs,
       _reset
     };
@@ -33624,112 +34487,6 @@ var require_ws2 = __commonJS({
   }
 });
 
-// packages/server-core/src/path-utils.js
-var require_path_utils = __commonJS({
-  "packages/server-core/src/path-utils.js"(exports2, module2) {
-    var path2 = require("path");
-    var fs2 = require("fs");
-    function encodeContentDispositionFilename(filename) {
-      const hasNonASCII = /[^\x00-\x7F]/.test(filename);
-      const escapedFilename = filename.replace(/["\\]/g, function(match) {
-        if (match === '"')
-          return '\\"';
-        if (match === "\\")
-          return "\\\\";
-        return match;
-      });
-      const sanitizedFilename = escapedFilename.replace(/[\x00-\x1F\x7F]/g, "");
-      if (!hasNonASCII) {
-        return `attachment; filename="${sanitizedFilename}"`;
-      }
-      const encodedFilename = encodeURIComponent(filename).replace(/['()]/g, function(c) {
-        return "%" + c.charCodeAt(0).toString(16).toUpperCase();
-      }).replace(/\*/g, "%2A");
-      const asciiFallback = filename.replace(/[^\x00-\x7F]/g, "_").replace(/["\\]/g, function(match) {
-        if (match === '"')
-          return '\\"';
-        if (match === "\\")
-          return "\\\\";
-        return match;
-      });
-      return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`;
-    }
-    function canonicalize(target, depth = 0) {
-      if (depth > 40) {
-        return null;
-      }
-      let current = target;
-      const tail = [];
-      while (true) {
-        try {
-          fs2.lstatSync(current);
-          break;
-        } catch (e) {
-          if (e.code !== "ENOENT") {
-            return null;
-          }
-          const parent = path2.dirname(current);
-          if (parent === current) {
-            return null;
-          }
-          tail.push(path2.basename(current));
-          current = parent;
-        }
-      }
-      let real;
-      try {
-        real = fs2.realpathSync(current);
-      } catch (e) {
-        if (e.code !== "ENOENT") {
-          return null;
-        }
-        let linkTarget;
-        try {
-          linkTarget = fs2.readlinkSync(current);
-        } catch {
-          return null;
-        }
-        real = canonicalize(
-          path2.resolve(path2.dirname(current), linkTarget),
-          depth + 1
-        );
-        if (real === null) {
-          return null;
-        }
-      }
-      return tail.length ? path2.join(real, ...tail.reverse()) : real;
-    }
-    function isWithin(child, base) {
-      if (child === base) {
-        return true;
-      }
-      const prefix = base.endsWith(path2.sep) ? base : base + path2.sep;
-      return child.startsWith(prefix);
-    }
-    function resolveVaultPath2(vaultRoot, relativePath) {
-      if (relativePath === null || relativePath === void 0) {
-        return null;
-      }
-      const cleaned = relativePath.replace(/^\/+/, "");
-      const resolvedRoot = path2.resolve(vaultRoot);
-      const resolved = path2.resolve(resolvedRoot, cleaned);
-      if (!isWithin(resolved, resolvedRoot)) {
-        return null;
-      }
-      const realBase = canonicalize(resolvedRoot);
-      const realTarget = canonicalize(resolved);
-      if (realBase === null || realTarget === null) {
-        return null;
-      }
-      if (!isWithin(realTarget, realBase)) {
-        return null;
-      }
-      return resolved;
-    }
-    module2.exports = { encodeContentDispositionFilename, resolveVaultPath: resolveVaultPath2 };
-  }
-});
-
 // packages/server-core/src/errors.js
 var require_errors = __commonJS({
   "packages/server-core/src/errors.js"(exports2, module2) {
@@ -33749,7 +34506,9 @@ var require_src2 = __commonJS({
     var { setupWebSocket: setupWebSocket2 } = require_ws2();
     var {
       encodeContentDispositionFilename,
-      resolveVaultPath: resolveVaultPath2
+      resolveVaultPath: resolveVaultPath2,
+      toVaultRel,
+      fromVaultRel
     } = require_path_utils();
     var { sanitizeError } = require_errors();
     module2.exports = {
@@ -33758,14 +34517,370 @@ var require_src2 = __commonJS({
       setupWebSocket: setupWebSocket2,
       encodeContentDispositionFilename,
       resolveVaultPath: resolveVaultPath2,
+      toVaultRel,
+      fromVaultRel,
       sanitizeError
     };
   }
 });
 
-// apps/ignis-server/server/bridge-plugin.js
-var require_bridge_plugin = __commonJS({
-  "apps/ignis-server/server/bridge-plugin.js"(exports2, module2) {
+// apps/ignis-server/server/config.js
+var require_config = __commonJS({
+  "apps/ignis-server/server/config.js"(exports2, module2) {
+    var path2 = require("path");
+    var fs2 = require("fs");
+    var { toVaultRel } = require_src2();
+    var REPO_ROOT2 = path2.join(__dirname, "..", "..", "..");
+    var vaultRoot = process.env.VAULT_ROOT || path2.join(REPO_ROOT2, "vaults");
+    var dataRoot = process.env.DATA_ROOT || path2.join(REPO_ROOT2, "data");
+    try {
+      fs2.mkdirSync(vaultRoot, { recursive: true });
+    } catch (e) {
+      console.error("[config] Failed to create VAULT_ROOT:", vaultRoot, e.message);
+    }
+    try {
+      fs2.mkdirSync(dataRoot, { recursive: true });
+    } catch (e) {
+      console.error("[config] Failed to create DATA_ROOT:", dataRoot, e.message);
+    }
+    function discoverVaults() {
+      const vaults2 = /* @__PURE__ */ Object.create(null);
+      try {
+        const entries = fs2.readdirSync(vaultRoot, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.name.startsWith(".")) {
+            continue;
+          }
+          let isDir = entry.isDirectory();
+          if (!isDir && entry.isSymbolicLink()) {
+            try {
+              isDir = fs2.statSync(path2.join(vaultRoot, entry.name)).isDirectory();
+            } catch (e) {
+              console.error(
+                "[config] Skipping unreadable vault entry:",
+                entry.name,
+                e.message
+              );
+            }
+          }
+          if (isDir) {
+            vaults2[entry.name] = path2.join(vaultRoot, entry.name);
+          }
+        }
+      } catch (e) {
+        console.error("[config] Failed to read VAULT_ROOT:", vaultRoot, e.message);
+      }
+      if (Object.keys(vaults2).length === 0 && process.env.AUTO_CREATE_DEFAULT === "true") {
+        const defaultPath = path2.join(vaultRoot, "My Vault");
+        try {
+          fs2.mkdirSync(path2.join(defaultPath, ".obsidian"), { recursive: true });
+          vaults2["My Vault"] = defaultPath;
+          console.log("[config] Created default vault: My Vault");
+        } catch (e) {
+          console.error("[config] Failed to create default vault:", e.message);
+        }
+      }
+      return vaults2;
+    }
+    var vaults = discoverVaults();
+    module2.exports = {
+      port: process.env.PORT || 8080,
+      host: process.env.LISTEN_HOST || "127.0.0.1",
+      vaultRoot,
+      dataRoot,
+      get vaults() {
+        return vaults;
+      },
+      get defaultVaultId() {
+        return Object.keys(vaults)[0] || null;
+      },
+      getVaultPath(id) {
+        return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
+      },
+      // { vaultId, relPath } or null
+      vaultForPath(absPath) {
+        const target = path2.resolve(absPath);
+        for (const [vaultId, vaultPath] of Object.entries(vaults)) {
+          const base = path2.resolve(vaultPath);
+          if (target === base || target.startsWith(base + path2.sep)) {
+            return {
+              vaultId,
+              relPath: toVaultRel(path2.relative(base, target))
+            };
+          }
+        }
+        return null;
+      },
+      refreshVaults() {
+        vaults = discoverVaults();
+        return vaults;
+      },
+      demoMode: process.env.DEMO_MODE === "true",
+      demoMaxSessions: parseInt(process.env.DEMO_MAX_SESSIONS) || 20,
+      demoVaultsPerSession: parseInt(process.env.DEMO_VAULTS_PER_SESSION) || 3,
+      demoSessionQuotaBytes: parseInt(process.env.DEMO_SESSION_QUOTA_BYTES) || 700 * 1024,
+      demoTimeoutMs: parseInt(process.env.DEMO_TIMEOUT_MS) || 30 * 60 * 1e3,
+      demoTemplateDir: process.env.DEMO_TEMPLATE_DIR || path2.join(__dirname, "demo-template"),
+      // 0 = disabled
+      headlessSyncIdleRestartMs: parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
+      devSuppressWriteFailures: process.env.DEV_SUPPRESS_WRITE_FAILURES === "true",
+      devForceReadingView: process.env.DEV_FORCE_READING_VIEW === "true",
+      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.12.7_unpacked"),
+      get obsidianVersion() {
+        const assetsPath = this.obsidianAssetsPath;
+        try {
+          const pkg = JSON.parse(
+            fs2.readFileSync(path2.join(assetsPath, "package.json"), "utf-8")
+          );
+          return pkg.version || "0.0.0";
+        } catch {
+          return "0.0.0";
+        }
+      }
+    };
+  }
+});
+
+// apps/ignis-server/server/settings.js
+var require_settings = __commonJS({
+  "apps/ignis-server/server/settings.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var path2 = require("path");
+    var config2 = require_config();
+    var SETTINGS_FILE = path2.join(config2.dataRoot, "server-settings.json");
+    var DEFAULTS = {
+      contentCacheBytes: 50 * 1024 * 1024,
+      inputCacheBytes: 200 * 1024 * 1024,
+      inputCacheTtlMs: 5 * 60 * 1e3,
+      writeCoalesceMs: 0,
+      maxBodyBytes: 50 * 1024 * 1024,
+      // "any" reaches any public host, "allowlist" restricts to proxyAllowlist, "disabled" blocks all proxying.
+      proxyMode: "any",
+      // Empty allows any public host.
+      proxyAllowlist: [],
+      // Hosts the browser fetches directly instead of through the proxy; they must send permissive CORS.
+      directFetchHosts: [],
+      wsOrigins: [],
+      // Private IPs/CIDRs the proxy may reach despite the SSRF guard.
+      proxyAllowPrivate: [],
+      ignoreRules: [
+        {
+          name: "System",
+          patterns: [".git", ".trash", "node_modules", "@eaDir", "#recycle"]
+        }
+      ],
+      trustedVaults: []
+    };
+    var PROXY_MODES = ["any", "allowlist", "disabled"];
+    var KEYS = Object.keys(DEFAULTS);
+    var ENV_ONLY_KEYS = ["wsOrigins", "proxyAllowPrivate"];
+    var MAX_BODY_BACKSTOP = 500 * 1024 * 1024;
+    var MAX_WRITE_COALESCE_MS = 6e4;
+    function parseList(raw) {
+      return raw.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+    function fromEnv() {
+      const env = {};
+      if (process.env.WRITE_COALESCE_MS !== void 0) {
+        const n = parseInt(process.env.WRITE_COALESCE_MS, 10);
+        if (Number.isFinite(n)) {
+          env.writeCoalesceMs = n;
+        }
+      }
+      if (process.env.WS_ORIGINS) {
+        env.wsOrigins = parseList(process.env.WS_ORIGINS);
+      }
+      if (process.env.PROXY_ALLOW_PRIVATE_HOSTS) {
+        env.proxyAllowPrivate = parseList(process.env.PROXY_ALLOW_PRIVATE_HOSTS);
+      }
+      return env;
+    }
+    var envOverrides = fromEnv();
+    var envIgnoreLines = process.env.IGNORED_PATHS ? parseList(process.env.IGNORED_PATHS) : [];
+    function hasShapeOf(reference, value) {
+      if (Array.isArray(reference)) {
+        return Array.isArray(value);
+      }
+      return typeof value === typeof reference;
+    }
+    function loadFile() {
+      try {
+        const parsed = JSON.parse(fs2.readFileSync(SETTINGS_FILE, "utf-8"));
+        const clean = {};
+        for (const key of KEYS) {
+          if (ENV_ONLY_KEYS.includes(key)) {
+            continue;
+          }
+          if (parsed[key] !== void 0 && hasShapeOf(DEFAULTS[key], parsed[key])) {
+            clean[key] = parsed[key];
+          }
+        }
+        return clean;
+      } catch {
+        return {};
+      }
+    }
+    var fileOverrides = loadFile();
+    function getAll() {
+      return { ...DEFAULTS, ...envOverrides, ...fileOverrides };
+    }
+    function get(key) {
+      return getAll()[key];
+    }
+    function resolveIgnoreLines() {
+      const rules = getAll().ignoreRules;
+      const validRules = Array.isArray(rules) ? rules.filter(
+        (r) => r && Array.isArray(r.patterns) && r.patterns.every((p) => typeof p === "string")
+      ) : [];
+      return [...validRules.flatMap((r) => r.patterns), ...envIgnoreLines];
+    }
+    function update(partial) {
+      for (const [key, value] of Object.entries(partial)) {
+        if (KEYS.includes(key) && !ENV_ONLY_KEYS.includes(key)) {
+          fileOverrides[key] = value;
+        }
+      }
+      fs2.mkdirSync(path2.dirname(SETTINGS_FILE), { recursive: true });
+      fs2.writeFileSync(SETTINGS_FILE, JSON.stringify(fileOverrides, null, 2));
+      return getAll();
+    }
+    module2.exports = {
+      DEFAULTS,
+      KEYS,
+      ENV_ONLY_KEYS,
+      PROXY_MODES,
+      MAX_BODY_BACKSTOP,
+      MAX_WRITE_COALESCE_MS,
+      getAll,
+      get,
+      resolveIgnoreLines,
+      update
+    };
+  }
+});
+
+// apps/ignis-server/server/static/cache-headers.js
+var require_cache_headers = __commonJS({
+  "apps/ignis-server/server/static/cache-headers.js"(exports2, module2) {
+    var IMMUTABLE = "public, max-age=31536000, immutable";
+    var SHORT = "public, max-age=300";
+    var ASSET_EXT = /\.(?:js|css|woff2?|ttf|otf|wasm|map)$/i;
+    function versionedSrc(src, version) {
+      if (!version) {
+        return src;
+      }
+      return src + (src.includes("?") ? "&" : "?") + "v=" + version;
+    }
+    function cacheControlFor2(reqPath, hasVersion) {
+      if (!ASSET_EXT.test(reqPath)) {
+        return null;
+      }
+      return hasVersion ? IMMUTABLE : SHORT;
+    }
+    module2.exports = { versionedSrc, cacheControlFor: cacheControlFor2 };
+  }
+});
+
+// apps/ignis-server/server/version.js
+var require_version = __commonJS({
+  "apps/ignis-server/server/version.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var path2 = require("path");
+    var cached = null;
+    function load() {
+      if (cached) {
+        return cached;
+      }
+      try {
+        cached = JSON.parse(
+          fs2.readFileSync(path2.join(__dirname, "build-info.json"), "utf-8")
+        );
+        return cached;
+      } catch {
+      }
+      try {
+        const pkg = JSON.parse(
+          fs2.readFileSync(
+            path2.join(__dirname, "..", "..", "..", "package.json"),
+            "utf-8"
+          )
+        );
+        cached = {
+          semver: pkg.version,
+          build: "dev",
+          version: `${pkg.version}-dev`
+        };
+        return cached;
+      } catch {
+      }
+      cached = { semver: "0.0.0", build: "unknown", version: "0.0.0-unknown" };
+      return cached;
+    }
+    function getVersion() {
+      return load().version;
+    }
+    function getSemver() {
+      return load().semver;
+    }
+    function getBuild() {
+      return load().build;
+    }
+    module2.exports = { getVersion, getSemver, getBuild };
+  }
+});
+
+// apps/ignis-server/server/static/index-html.js
+var require_index_html = __commonJS({
+  "apps/ignis-server/server/static/index-html.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var path2 = require("path");
+    var config2 = require_config();
+    var { getVersion } = require_version();
+    var { versionedSrc } = require_cache_headers();
+    var cachedHtml = null;
+    function buildIndexHtml2() {
+      if (cachedHtml) {
+        return cachedHtml;
+      }
+      const version = getVersion();
+      const obsidianHtmlPath = path2.join(config2.obsidianAssetsPath, "index.html");
+      const obsidianHtml = fs2.readFileSync(obsidianHtmlPath, "utf-8");
+      const scriptRegex = /<script[^>]+src="([^"]+)"[^>]*>/g;
+      const scripts = [];
+      let match;
+      while ((match = scriptRegex.exec(obsidianHtml)) !== null) {
+        scripts.push(match[1]);
+      }
+      const ov = config2.obsidianVersion;
+      const obsidianVersion = ov && ov !== "0.0.0" ? ov : null;
+      const templatePath = path2.join(__dirname, "..", "assets", "index.html");
+      let html = fs2.readFileSync(templatePath, "utf-8");
+      html = html.replace("__IGNIS_UI_SRC__", `ignis-ui.js?v=${version}`);
+      html = html.replace("__SHIM_LOADER_SRC__", `shim-loader.js?v=${version}`);
+      html = html.replace(
+        "__APP_CSS_SRC__",
+        versionedSrc("app.css", obsidianVersion)
+      );
+      html = html.replace(
+        "__OBSIDIAN_SCRIPTS__",
+        JSON.stringify(scripts.map((s) => versionedSrc(s, obsidianVersion)))
+      );
+      if (config2.demoMode) {
+        html = html.replace(
+          '<body class="theme-dark">',
+          '<body class="theme-dark" data-demo-mode="true">'
+        );
+      }
+      cachedHtml = html;
+      return cachedHtml;
+    }
+    module2.exports = { buildIndexHtml: buildIndexHtml2 };
+  }
+});
+
+// apps/ignis-server/server/plugin-system/migrate-bridge.js
+var require_migrate_bridge = __commonJS({
+  "apps/ignis-server/server/plugin-system/migrate-bridge.js"(exports2, module2) {
     var fs2 = require("fs");
     var path2 = require("path");
     var BRIDGE_PLUGIN_ID2 = "ignis-bridge";
@@ -33917,7 +35032,7 @@ var require_manager = __commonJS({
     var express2 = require_express2();
     var { discoverPlugins } = require_discovery();
     var configStore = require_config_store();
-    var { getVersion: getVersion2 } = require_version();
+    var { getVersion } = require_version();
     var discoveredPlugins = /* @__PURE__ */ new Map();
     var loadedPlugins = /* @__PURE__ */ new Map();
     var pluginRouters = /* @__PURE__ */ new Map();
@@ -33979,6 +35094,9 @@ var require_manager = __commonJS({
       pluginRouters.clear();
       console.log("[plugins] All plugins shut down");
     }
+    function getPluginDataDir2(dataRoot, pluginId) {
+      return path2.join(dataRoot, "plugins", pluginId);
+    }
     async function loadPlugin(pluginId) {
       if (loadedPlugins.has(pluginId)) {
         return;
@@ -33988,7 +35106,7 @@ var require_manager = __commonJS({
         throw new Error(`Plugin not found: ${pluginId}`);
       }
       const plugin = discovered.module;
-      const dataDir = path2.join(serverCtx.config.dataRoot, "plugins", pluginId);
+      const dataDir = getPluginDataDir2(serverCtx.config.dataRoot, pluginId);
       await fs2.promises.mkdir(dataDir, { recursive: true });
       const router = express2.Router();
       const pluginCtx = {
@@ -34047,7 +35165,7 @@ var require_manager = __commonJS({
         await loaded.module.onVaultEnabled(vaultId, vaultPath);
       }
       if (discovered.obsidianPlugin && discovered.bundledPluginId) {
-        const v = `?v=${getVersion2()}`;
+        const v = `?v=${getVersion()}`;
         const entry = {
           id: discovered.bundledPluginId,
           scriptUrl: `/${discovered.bundledPluginId}.js${v}`,
@@ -34139,11 +35257,225 @@ var require_manager = __commonJS({
     module2.exports = {
       initPlugins: initPlugins2,
       shutdownPlugins: shutdownPlugins2,
+      getPluginDataDir: getPluginDataDir2,
       enablePluginForVault,
       disablePluginForVault,
       getDiscoveredPlugins,
       getBundledPluginDirs: getBundledPluginDirs2,
       getVirtualPluginsForVault
+    };
+  }
+});
+
+// apps/ignis-server/server/obsidian-account/ob-cli.js
+var require_ob_cli = __commonJS({
+  "apps/ignis-server/server/obsidian-account/ob-cli.js"(exports2, module2) {
+    var { spawn, execSync } = require("child_process");
+    var fs2 = require("fs");
+    var os = require("os");
+    var path2 = require("path");
+    var LOGIN_TIMEOUT_MS = 3e4;
+    var LOGIN_KILL_MS = 5e3;
+    var BAD_CREDENTIALS_TEXT = "double check your email and password";
+    var OVERLOAD_TEXT = "Unexpected token";
+    var obHome = null;
+    var cliJs = null;
+    function init(opts) {
+      obHome = opts && opts.obHome ? opts.obHome : null;
+      if (obHome) {
+        try {
+          fs2.mkdirSync(obHome, { recursive: true });
+        } catch {
+        }
+      }
+    }
+    function getObHome() {
+      return obHome || os.homedir();
+    }
+    function authTokenFileIn(home) {
+      const configDir = process.platform === "linux" ? path2.join(home, ".config", "obsidian-headless") : path2.join(home, ".obsidian-headless");
+      return path2.join(configDir, "auth_token");
+    }
+    function getAuthTokenFile() {
+      return authTokenFileIn(getObHome());
+    }
+    function obEnv(home) {
+      const env = { ...process.env, HOME: home };
+      delete env.XDG_CONFIG_HOME;
+      delete env.OBSIDIAN_AUTH_TOKEN;
+      return env;
+    }
+    function checkInstalled() {
+      try {
+        const output = execSync("ob --version", {
+          stdio: "pipe",
+          windowsHide: true
+        }).toString().trim();
+        return { installed: true, version: output || "unknown" };
+      } catch {
+        return { installed: false, version: null };
+      }
+    }
+    function obCliJs() {
+      if (!cliJs) {
+        const globalModules = execSync("npm root -g", {
+          stdio: "pipe",
+          windowsHide: true
+        }).toString().trim();
+        cliJs = path2.join(globalModules, "obsidian-headless", "cli.js");
+      }
+      return cliJs;
+    }
+    function spawnOb(args, opts = {}) {
+      const spawnOpts = {
+        env: obEnv(getObHome()),
+        shell: false,
+        windowsHide: true,
+        ...opts
+      };
+      if (process.platform === "win32") {
+        return spawn(process.execPath, [obCliJs(), ...args], spawnOpts);
+      }
+      return spawn("ob", args, spawnOpts);
+    }
+    function runCommand(args, opts = {}) {
+      return new Promise((resolve, reject) => {
+        let stdout = "";
+        let stderr = "";
+        const { input, ...spawnOpts } = opts;
+        const proc = spawnOb(args, spawnOpts);
+        if (input !== void 0) {
+          proc.stdin.end(input);
+        }
+        proc.stdout.on("data", (data) => {
+          stdout += data.toString();
+        });
+        proc.stderr.on("data", (data) => {
+          stderr += data.toString();
+        });
+        proc.on("close", (code) => {
+          if (code === 0) {
+            resolve({ stdout, stderr });
+          } else {
+            reject(
+              new Error(`ob ${args[0]} failed (code ${code}): ${stderr || stdout}`)
+            );
+          }
+        });
+        proc.on("error", (err) => {
+          reject(err);
+        });
+      });
+    }
+    function readTokenFile(file) {
+      try {
+        return fs2.readFileSync(file, "utf-8").trim();
+      } catch {
+        return "";
+      }
+    }
+    function classifyLogin({ code, stdout, stderr, email, scratchHome }) {
+      if (stderr.includes(BAD_CREDENTIALS_TEXT)) {
+        return { outcome: "bad-credentials" };
+      }
+      if (stderr.includes(OVERLOAD_TEXT)) {
+        return { outcome: "overload" };
+      }
+      if (code !== 0) {
+        return {
+          outcome: "error",
+          message: stderr.trim() || `ob login exited with code ${code}`
+        };
+      }
+      const token = readTokenFile(authTokenFileIn(scratchHome));
+      if (!token) {
+        return { outcome: "error", message: "ob login wrote no auth token" };
+      }
+      const loggedIn = stdout.match(/Logged in as (.+) \(/);
+      return {
+        outcome: "ok",
+        token,
+        name: loggedIn ? loggedIn[1] : null,
+        email
+      };
+    }
+    function login({ email, password, mfa }) {
+      const args = ["login", "--email", email];
+      if (typeof mfa === "string" && mfa !== "") {
+        args.push("--mfa", mfa);
+      }
+      return new Promise((resolve) => {
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        let timedOut = false;
+        let scratchHome;
+        let proc;
+        let killTimer = null;
+        try {
+          scratchHome = fs2.mkdtempSync(path2.join(getObHome(), "login-"));
+        } catch (e) {
+          resolve({ outcome: "error", message: e.message });
+          return;
+        }
+        function settle(outcome) {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          clearTimeout(killTimer);
+          try {
+            fs2.rmSync(scratchHome, { recursive: true, force: true });
+          } catch {
+          }
+          resolve(outcome);
+        }
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (!proc) {
+            settle({ outcome: "error", message: "ob login timed out" });
+            return;
+          }
+          proc.kill("SIGTERM");
+          killTimer = setTimeout(() => proc.kill("SIGKILL"), LOGIN_KILL_MS);
+        }, LOGIN_TIMEOUT_MS);
+        const env = obEnv(scratchHome);
+        try {
+          proc = spawnOb(args, { env, stdio: ["pipe", "pipe", "pipe"] });
+        } catch (e) {
+          settle({ outcome: "error", message: e.message });
+          return;
+        }
+        proc.stdout.on("data", (data) => {
+          stdout += data.toString();
+        });
+        proc.stderr.on("data", (data) => {
+          stderr += data.toString();
+        });
+        proc.on("close", (code) => {
+          if (timedOut) {
+            settle({ outcome: "error", message: "ob login timed out" });
+            return;
+          }
+          settle(classifyLogin({ code, stdout, stderr, email, scratchHome }));
+        });
+        proc.on("error", (err) => {
+          settle({ outcome: "error", message: err.message });
+        });
+        proc.stdin.on("error", () => {
+        });
+        proc.stdin.end(password);
+      });
+    }
+    module2.exports = {
+      init,
+      getObHome,
+      getAuthTokenFile,
+      checkInstalled,
+      spawnOb,
+      runCommand,
+      login
     };
   }
 });
@@ -34190,28 +35522,220 @@ var require_plugins = __commonJS({
   }
 });
 
-// apps/ignis-server/server/routes/bootstrap.js
-var require_bootstrap = __commonJS({
-  "apps/ignis-server/server/routes/bootstrap.js"(exports2, module2) {
-    var express2 = require_express2();
-    var fs2 = require("fs");
-    var fsp = fs2.promises;
-    var path2 = require("path");
-    var zlib2 = require("zlib");
-    var config2 = require_config();
-    var {
-      getDiscoveredPlugins,
-      getVirtualPluginsForVault
-    } = require_manager();
-    var { getVersion: getVersion2 } = require_version();
-    var settings2 = require_settings();
-    var { sanitizeError, writeCoalescer: writeCoalescer2 } = require_src2();
-    var { getPending } = writeCoalescer2;
-    var router = express2.Router();
+// apps/ignis-server/server/cache/state.js
+var require_state = __commonJS({
+  "apps/ignis-server/server/cache/state.js"(exports2, module2) {
     var cache = /* @__PURE__ */ new Map();
     var pendingBuilds = /* @__PURE__ */ new Map();
+    var revalidateOnce = /* @__PURE__ */ new Set();
+    var applyQueues = /* @__PURE__ */ new Map();
+    var activeCrawls = /* @__PURE__ */ new Map();
+    var lastCrawls = /* @__PURE__ */ new Map();
+    var compressedEtags = /* @__PURE__ */ new WeakMap();
+    var compressing = /* @__PURE__ */ new WeakMap();
+    var swapListeners = /* @__PURE__ */ new Set();
+    var invalidateListeners = /* @__PURE__ */ new Set();
+    var staleListeners = /* @__PURE__ */ new Set();
     var bootNonce = require("crypto").randomBytes(6).toString("hex");
     var revisionCounter = 0;
+    function nextEtag() {
+      return '"' + bootNonce + "-" + ++revisionCounter + '"';
+    }
+    function notifyEntrySwapped(vaultId, revision) {
+      for (const fn of swapListeners) {
+        try {
+          fn(vaultId, revision);
+        } catch (e) {
+          console.error("[bootstrap] swap listener error:", e.message);
+        }
+      }
+    }
+    function notifyVaultInvalidated(vaultId) {
+      for (const fn of invalidateListeners) {
+        try {
+          fn(vaultId);
+        } catch (e) {
+          console.error("[bootstrap] invalidate listener error:", e.message);
+        }
+      }
+    }
+    function notifyStaleEntryServed(vaultId) {
+      for (const fn of staleListeners) {
+        try {
+          fn(vaultId);
+        } catch (e) {
+          console.error("[bootstrap] stale listener error:", e.message);
+        }
+      }
+    }
+    function onEntrySwapped(fn) {
+      swapListeners.add(fn);
+    }
+    function onVaultInvalidated(fn) {
+      invalidateListeners.add(fn);
+    }
+    function onStaleEntryServed(fn) {
+      staleListeners.add(fn);
+    }
+    function lastCrawlAt(vaultId) {
+      return lastCrawls.get(vaultId) || 0;
+    }
+    module2.exports = {
+      cache,
+      pendingBuilds,
+      revalidateOnce,
+      applyQueues,
+      activeCrawls,
+      lastCrawls,
+      compressedEtags,
+      compressing,
+      nextEtag,
+      notifyEntrySwapped,
+      notifyVaultInvalidated,
+      notifyStaleEntryServed,
+      onEntrySwapped,
+      onVaultInvalidated,
+      onStaleEntryServed,
+      lastCrawlAt
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/tree-ops.js
+var require_tree_ops = __commonJS({
+  "apps/ignis-server/server/cache/tree-ops.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var fsp = fs2.promises;
+    var { fromVaultRel } = require_src2();
+    function fileNode(s) {
+      return {
+        type: "file",
+        size: s.size,
+        mtime: s.mtimeMs,
+        ctime: s.ctimeMs
+      };
+    }
+    async function statFileNode(absPath) {
+      return fileNode(await fsp.stat(absPath));
+    }
+    async function statDirMtime(absPath) {
+      try {
+        const s = await fsp.stat(absPath);
+        return s.mtimeMs;
+      } catch {
+        return 0;
+      }
+    }
+    function isRepresentable(relPath) {
+      return relPath !== "" && !relPath.split("/").includes("..");
+    }
+    function setNode(tree, relPath, node) {
+      const current = tree[relPath];
+      if (current && current.type === node.type && current.size === node.size && current.mtime === node.mtime && current.ctime === node.ctime) {
+        return false;
+      }
+      tree[relPath] = node;
+      return true;
+    }
+    async function addMissingParentDirs(vaultPath, entry, relPath) {
+      const parts = relPath.split("/");
+      parts.pop();
+      let ancestor = "";
+      let changed = false;
+      for (const part of parts) {
+        ancestor = ancestor ? ancestor + "/" + part : part;
+        const node = entry.response.tree[ancestor];
+        if (!node || node.type !== "directory") {
+          entry.response.tree[ancestor] = { type: "directory" };
+          changed = true;
+        }
+        if (!(ancestor in entry.dirMtimes)) {
+          entry.dirMtimes[ancestor] = await statDirMtime(
+            fromVaultRel(vaultPath, ancestor)
+          );
+          changed = true;
+        }
+      }
+      return changed;
+    }
+    function subtreeKeys(map, root) {
+      const prefix = root + "/";
+      return Object.keys(map).filter(
+        (key) => key === root || key.startsWith(prefix)
+      );
+    }
+    function sweepPrefix(entry, root) {
+      let changed = false;
+      for (const key of subtreeKeys(entry.response.tree, root)) {
+        delete entry.response.tree[key];
+        changed = true;
+      }
+      for (const key of subtreeKeys(entry.dirMtimes, root)) {
+        delete entry.dirMtimes[key];
+        changed = true;
+      }
+      return changed;
+    }
+    function removePath(entry, relPath) {
+      const node = entry.response.tree[relPath];
+      const isDirectory = node ? node.type === "directory" : relPath in entry.dirMtimes;
+      if (isDirectory) {
+        return sweepPrefix(entry, relPath);
+      }
+      if (!node) {
+        return false;
+      }
+      delete entry.response.tree[relPath];
+      return true;
+    }
+    async function movePath(vaultPath, entry, from, to) {
+      if (to === from) {
+        return false;
+      }
+      const tree = entry.response.tree;
+      const moved = subtreeKeys(tree, from);
+      const movedDirs = subtreeKeys(entry.dirMtimes, from);
+      if (moved.length === 0 && movedDirs.length === 0) {
+        const s = await fsp.stat(fromVaultRel(vaultPath, to));
+        if (s.isDirectory()) {
+          throw new Error(`rename of an unrecorded directory: ${from}`);
+        }
+        const added = await addMissingParentDirs(vaultPath, entry, to);
+        const stored = setNode(tree, to, fileNode(s));
+        return added || stored;
+      }
+      sweepPrefix(entry, to);
+      for (const key of moved) {
+        tree[to + key.slice(from.length)] = tree[key];
+        delete tree[key];
+      }
+      for (const key of movedDirs) {
+        entry.dirMtimes[to + key.slice(from.length)] = entry.dirMtimes[key];
+        delete entry.dirMtimes[key];
+      }
+      await addMissingParentDirs(vaultPath, entry, to);
+      return true;
+    }
+    module2.exports = {
+      fileNode,
+      statFileNode,
+      statDirMtime,
+      isRepresentable,
+      setNode,
+      addMissingParentDirs,
+      subtreeKeys,
+      sweepPrefix,
+      removePath,
+      movePath
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/compress.js
+var require_compress = __commonJS({
+  "apps/ignis-server/server/cache/compress.js"(exports2, module2) {
+    var zlib2 = require("zlib");
+    var { compressedEtags, compressing } = require_state();
     function preCompress(buf) {
       return Promise.all([
         new Promise((resolve, reject) => {
@@ -34230,42 +35754,465 @@ var require_bootstrap = __commonJS({
         })
       ]).then(([br, gz]) => ({ br, gz }));
     }
+    function markCompressionStale(entry) {
+      compressedEtags.delete(entry);
+    }
+    function getOrCompress(entry) {
+      if (compressedEtags.get(entry) === entry.etag) {
+        return Promise.resolve(entry.compressed);
+      }
+      const etag = entry.etag;
+      const inFlight = compressing.get(entry);
+      if (inFlight && inFlight.etag === etag) {
+        return inFlight.promise;
+      }
+      const jsonBuf = Buffer.from(JSON.stringify(entry.response));
+      const run = { etag, promise: null };
+      run.promise = preCompress(jsonBuf).then((compressed) => {
+        if (entry.etag === etag) {
+          entry.compressed = compressed;
+          compressedEtags.set(entry, etag);
+        }
+        return compressed;
+      }).catch((e) => {
+        console.warn("[bootstrap] precompression failed:", e.message);
+        return {};
+      }).finally(() => {
+        if (compressing.get(entry) === run) {
+          compressing.delete(entry);
+        }
+      });
+      compressing.set(entry, run);
+      return run.promise;
+    }
+    module2.exports = {
+      preCompress,
+      markCompressionStale,
+      getOrCompress
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/invalidate.js
+var require_invalidate = __commonJS({
+  "apps/ignis-server/server/cache/invalidate.js"(exports2, module2) {
+    var {
+      cache,
+      revalidateOnce,
+      applyQueues,
+      activeCrawls,
+      lastCrawls,
+      notifyVaultInvalidated
+    } = require_state();
+    function cancelQueue(vaultId) {
+      const queue = applyQueues.get(vaultId);
+      if (queue) {
+        queue.generation++;
+      }
+    }
+    function invalidateVault(vaultId) {
+      cache.delete(vaultId);
+      revalidateOnce.delete(vaultId);
+      activeCrawls.delete(vaultId);
+      cancelQueue(vaultId);
+      lastCrawls.delete(vaultId);
+      notifyVaultInvalidated(vaultId);
+    }
+    function invalidateAll() {
+      const cached = Array.from(cache.keys());
+      cache.clear();
+      revalidateOnce.clear();
+      activeCrawls.clear();
+      lastCrawls.clear();
+      for (const vaultId of applyQueues.keys()) {
+        cancelQueue(vaultId);
+      }
+      for (const vaultId of cached) {
+        notifyVaultInvalidated(vaultId);
+      }
+    }
+    function markForRevalidation(vaultId) {
+      revalidateOnce.add(vaultId);
+    }
+    module2.exports = {
+      cancelQueue,
+      invalidateVault,
+      invalidateAll,
+      markForRevalidation
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/apply.js
+var require_apply = __commonJS({
+  "apps/ignis-server/server/cache/apply.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var fsp = fs2.promises;
+    var config2 = require_config();
+    var { cache, applyQueues, activeCrawls, nextEtag } = require_state();
+    var { toVaultRel, fromVaultRel } = require_src2();
+    var {
+      statFileNode,
+      isRepresentable,
+      setNode,
+      addMissingParentDirs,
+      removePath,
+      movePath
+    } = require_tree_ops();
+    var { markCompressionStale } = require_compress();
+    var { invalidateVault } = require_invalidate();
+    var QUEUE_STALL_THRESHOLD_MS = 30 * 1e3;
+    function startStallTimer(vaultId, queue) {
+      queue.stallTimer = setTimeout(() => {
+        queue.stallTimer = null;
+        console.warn(
+          `[bootstrap] apply queue on vault ${vaultId}: no task has completed in ${Math.round(QUEUE_STALL_THRESHOLD_MS / 1e3)}s`
+        );
+      }, QUEUE_STALL_THRESHOLD_MS);
+      queue.stallTimer.unref?.();
+    }
+    function clearStallTimer(queue) {
+      clearTimeout(queue.stallTimer);
+      queue.stallTimer = null;
+    }
+    function enqueue(vaultId, task) {
+      let queue = applyQueues.get(vaultId);
+      if (!queue) {
+        queue = { tail: Promise.resolve(), generation: 0, stallTimer: null };
+        applyQueues.set(vaultId, queue);
+      }
+      const generation = queue.generation;
+      const gated = () => {
+        if (queue.generation !== generation) {
+          return null;
+        }
+        startStallTimer(vaultId, queue);
+        return task();
+      };
+      const settle = () => clearStallTimer(queue);
+      const run = queue.tail.then(gated, gated);
+      const tail = run.then(settle, settle);
+      queue.tail = tail;
+      tail.then(() => {
+        if (applyQueues.get(vaultId) === queue && queue.tail === tail) {
+          applyQueues.delete(vaultId);
+        }
+      });
+      return run;
+    }
+    function beginCrawl(vaultId) {
+      if (activeCrawls.has(vaultId)) {
+        console.warn(
+          `[bootstrap] crawl began on vault ${vaultId} while one is active`
+        );
+      }
+      const crawl = { mutations: [] };
+      activeCrawls.set(vaultId, crawl);
+      return crawl;
+    }
+    function endCrawl(vaultId, crawl) {
+      if (activeCrawls.get(vaultId) === crawl) {
+        activeCrawls.delete(vaultId);
+      }
+    }
+    function isCrawling(vaultId) {
+      return activeCrawls.has(vaultId);
+    }
+    async function resolveEvent(vaultPath, event) {
+      const relPath = toVaultRel(event.path);
+      if (!isRepresentable(relPath)) {
+        return null;
+      }
+      switch (event.type) {
+        case "created":
+        case "modified": {
+          const node = event.stat ? {
+            type: "file",
+            size: event.stat.size,
+            mtime: event.stat.mtime,
+            ctime: event.stat.ctime
+          } : await statFileNode(fromVaultRel(vaultPath, relPath));
+          return { type: event.type, path: relPath, node };
+        }
+        case "folder-created": {
+          if (event.stat) {
+            return { type: event.type, path: relPath, mtime: event.stat.mtime };
+          }
+          const s = await fsp.stat(fromVaultRel(vaultPath, relPath)).catch(() => null);
+          return s ? { type: event.type, path: relPath, mtime: s.mtimeMs } : null;
+        }
+        case "deleted":
+          return { type: event.type, path: relPath };
+        case "rename": {
+          const toPath = toVaultRel(event.toPath);
+          return isRepresentable(toPath) ? { type: event.type, path: relPath, toPath } : null;
+        }
+        default:
+          throw new Error(`unknown mutation type: ${event.type}`);
+      }
+    }
+    async function applyMutationRecord(vaultPath, entry, mutationRecord) {
+      const relPath = mutationRecord.path;
+      switch (mutationRecord.type) {
+        case "created":
+        case "modified": {
+          const added = await addMissingParentDirs(vaultPath, entry, relPath);
+          const stored = setNode(entry.response.tree, relPath, mutationRecord.node);
+          return added || stored;
+        }
+        case "folder-created": {
+          const added = await addMissingParentDirs(vaultPath, entry, relPath);
+          const stored = setNode(entry.response.tree, relPath, {
+            type: "directory"
+          });
+          let recorded = false;
+          if (entry.dirMtimes[relPath] !== mutationRecord.mtime) {
+            entry.dirMtimes[relPath] = mutationRecord.mtime;
+            recorded = true;
+          }
+          return added || stored || recorded;
+        }
+        case "deleted":
+          return removePath(entry, relPath);
+        case "rename":
+          return movePath(vaultPath, entry, relPath, mutationRecord.toPath);
+        default:
+          throw new Error(`unknown mutation type: ${mutationRecord.type}`);
+      }
+    }
+    function bumpRevision(entry) {
+      entry.etag = nextEtag();
+      entry.response.etag = entry.etag;
+      markCompressionStale(entry);
+    }
+    function failBatch(vaultId, e) {
+      console.warn(`[bootstrap] apply failed on vault ${vaultId}:`, e.message);
+      invalidateVault(vaultId);
+      return null;
+    }
+    async function runBatch(vaultId, batch) {
+      const vaultPath = config2.getVaultPath(vaultId);
+      const entry = cache.get(vaultId);
+      const crawl = activeCrawls.get(vaultId);
+      if (!vaultPath || !entry && !crawl) {
+        return null;
+      }
+      const mutationRecords = [];
+      try {
+        for (const event of batch) {
+          const mutationRecord = await resolveEvent(vaultPath, event);
+          if (mutationRecord) {
+            mutationRecords.push(mutationRecord);
+          }
+        }
+      } catch (e) {
+        return failBatch(vaultId, e);
+      }
+      if (crawl) {
+        crawl.mutations.push(...mutationRecords);
+      }
+      if (!entry) {
+        return null;
+      }
+      try {
+        let changed = false;
+        for (const mutationRecord of mutationRecords) {
+          const applied = await applyMutationRecord(
+            vaultPath,
+            entry,
+            mutationRecord
+          );
+          changed = changed || applied;
+        }
+        if (changed) {
+          bumpRevision(entry);
+        }
+      } catch (e) {
+        return failBatch(vaultId, e);
+      }
+      return entry.etag;
+    }
+    function applyMutation(vaultId, events) {
+      const batch = Array.isArray(events) ? events : [events];
+      return enqueue(vaultId, () => runBatch(vaultId, batch));
+    }
+    module2.exports = {
+      enqueue,
+      beginCrawl,
+      endCrawl,
+      isCrawling,
+      applyMutationRecord,
+      applyMutation
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/ignore-suggestions.js
+var require_ignore_suggestions = __commonJS({
+  "apps/ignis-server/server/cache/ignore-suggestions.js"(exports2, module2) {
+    var { watcher: watcher2 } = require_src2();
+    var { cache } = require_state();
+    var PLUGINS_DIR = ".obsidian/plugins";
+    var HEAVY_PLUGIN_FILES = 500;
+    var LIVE_PLUGIN_FILES = [
+      "manifest.json",
+      "main.js",
+      "styles.css",
+      "data.json"
+    ];
+    function countPluginFiles(tree, includeIgnored) {
+      const plugins = /* @__PURE__ */ new Map();
+      for (const [relPath, node] of Object.entries(tree)) {
+        if (node.type !== "file" || !relPath.startsWith(PLUGINS_DIR + "/")) {
+          continue;
+        }
+        const segments = relPath.slice(PLUGINS_DIR.length + 1).split("/");
+        if (segments.length < 2 || !includeIgnored && watcher2.isIgnoredPath(relPath)) {
+          continue;
+        }
+        const pluginDir = PLUGINS_DIR + "/" + segments[0];
+        let counts = plugins.get(pluginDir);
+        if (!counts) {
+          counts = { total: 0, root: 0, subdirs: /* @__PURE__ */ new Map() };
+          plugins.set(pluginDir, counts);
+        }
+        counts.total++;
+        if (segments.length === 2) {
+          counts.root++;
+        } else {
+          const subdir = segments[1];
+          counts.subdirs.set(subdir, (counts.subdirs.get(subdir) || 0) + 1);
+        }
+      }
+      return plugins;
+    }
+    function patternsFor(pluginDir, counts) {
+      if (counts.root > HEAVY_PLUGIN_FILES) {
+        return [
+          pluginDir + "/*",
+          ...LIVE_PLUGIN_FILES.map((name) => `!${pluginDir}/${name}`)
+        ];
+      }
+      const ranked = [...counts.subdirs].sort(
+        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+      );
+      const patterns = [];
+      let remaining = counts.total;
+      for (const [subdir, count] of ranked) {
+        if (remaining <= HEAVY_PLUGIN_FILES) {
+          break;
+        }
+        patterns.push(`${pluginDir}/${subdir}`);
+        remaining -= count;
+      }
+      return patterns;
+    }
+    function suggestionsForTree(tree, includeIgnored = false) {
+      const suggestions = [];
+      for (const [pluginDir, counts] of countPluginFiles(tree, includeIgnored)) {
+        if (counts.total <= HEAVY_PLUGIN_FILES) {
+          continue;
+        }
+        suggestions.push({
+          pluginDir,
+          fileCount: counts.total,
+          patterns: patternsFor(pluginDir, counts)
+        });
+      }
+      return suggestions.sort(
+        (a, b) => b.fileCount - a.fileCount || a.pluginDir.localeCompare(b.pluginDir)
+      );
+    }
+    function ignoreSuggestions() {
+      const all = [];
+      for (const [vaultId, entry] of cache) {
+        for (const suggestion of suggestionsForTree(entry.response.tree, true)) {
+          all.push({ vault: vaultId, ...suggestion });
+        }
+      }
+      return all;
+    }
+    module2.exports = {
+      HEAVY_PLUGIN_FILES,
+      suggestionsForTree,
+      ignoreSuggestions
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/crawl.js
+var require_crawl = __commonJS({
+  "apps/ignis-server/server/cache/crawl.js"(exports2, module2) {
+    var fs2 = require("fs");
+    var fsp = fs2.promises;
+    var path2 = require("path");
+    var config2 = require_config();
+    var {
+      getDiscoveredPlugins,
+      getVirtualPluginsForVault
+    } = require_manager();
+    var { getVersion } = require_version();
+    var settings2 = require_settings();
+    var {
+      watcher: watcher2,
+      writeCoalescer: writeCoalescer2,
+      toVaultRel,
+      fromVaultRel
+    } = require_src2();
+    var { getPending, pendingPaths, estimateSize } = writeCoalescer2;
+    var {
+      cache,
+      pendingBuilds,
+      activeCrawls,
+      revalidateOnce,
+      lastCrawls,
+      nextEtag,
+      notifyEntrySwapped,
+      notifyStaleEntryServed
+    } = require_state();
+    var { fileNode } = require_tree_ops();
+    var { getOrCompress, markCompressionStale } = require_compress();
+    var {
+      enqueue,
+      beginCrawl,
+      endCrawl,
+      isCrawling,
+      applyMutationRecord
+    } = require_apply();
+    var { invalidateVault } = require_invalidate();
+    var { suggestionsForTree } = require_ignore_suggestions();
     async function walkTree(rootPath) {
       const tree = {};
       const dirMtimes = {};
       async function walk(dir, prefix) {
-        const stat = await fsp.stat(dir);
-        dirMtimes[prefix] = stat.mtimeMs;
+        if (!watcher2.isIgnoredPath(prefix)) {
+          const stat = await fsp.stat(dir);
+          dirMtimes[prefix] = stat.mtimeMs;
+        }
         const entries = await fsp.readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
-          const rel = prefix ? prefix + "/" + entry.name : entry.name;
+          const relPath = prefix ? prefix + "/" + entry.name : entry.name;
           const full = path2.join(dir, entry.name);
           if (entry.isDirectory()) {
-            tree[rel] = { type: "directory" };
-            await walk(full, rel);
+            tree[relPath] = { type: "directory" };
+            await walk(full, relPath);
           } else {
             try {
               const buffered = getPending(full);
               if (buffered) {
                 const s = await fsp.stat(full).catch(() => null);
-                const size = Buffer.isBuffer(buffered.data) ? buffered.data.length : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
-                tree[rel] = {
+                const size = estimateSize(buffered.data, buffered.encoding);
+                tree[relPath] = {
                   type: "file",
                   size,
                   mtime: Date.now(),
                   ctime: s ? s.ctimeMs : Date.now()
                 };
               } else {
-                const s = await fsp.stat(full);
-                tree[rel] = {
-                  type: "file",
-                  size: s.size,
-                  mtime: s.mtimeMs,
-                  ctime: s.ctimeMs
-                };
+                tree[relPath] = fileNode(await fsp.stat(full));
               }
             } catch {
-              tree[rel] = { type: "file" };
+              tree[relPath] = { type: "file" };
             }
           }
         }
@@ -34273,13 +36220,27 @@ var require_bootstrap = __commonJS({
       await walk(rootPath, "");
       return { tree, dirMtimes };
     }
+    function logIgnoreSuggestions(vaultId, tree) {
+      for (const { pluginDir, fileCount, patterns } of suggestionsForTree(tree)) {
+        console.log(
+          `[ignore-suggest] vault=${vaultId} plugin=${pluginDir} files=${fileCount} patterns=${patterns.join(" ")}`
+        );
+      }
+    }
+    async function crawlVault(vaultId, vaultPath) {
+      const result = await walkTree(vaultPath);
+      lastCrawls.set(vaultId, Date.now());
+      logIgnoreSuggestions(vaultId, result.tree);
+      return result;
+    }
     function buildVaultInfo(vaultId, vaultPath) {
       return {
         id: vaultId,
         name: vaultId,
         path: vaultPath,
         platform: process.platform,
-        version: config2.obsidianVersion
+        version: config2.obsidianVersion,
+        trustPlugins: settings2.get("trustedVaults").includes(vaultId)
       };
     }
     function buildVaultList() {
@@ -34289,10 +36250,29 @@ var require_bootstrap = __commonJS({
         path: vaultPath
       }));
     }
+    function buildResponse(vaultId, vaultPath, tree, etag) {
+      return {
+        vault: buildVaultInfo(vaultId, vaultPath),
+        vaultList: buildVaultList(),
+        tree,
+        etag,
+        // In demo mode, hide server-side plugins from the client.
+        plugins: config2.demoMode ? [] : getDiscoveredPlugins(),
+        virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),
+        settings: {
+          contentCacheBytes: settings2.get("contentCacheBytes"),
+          inputCacheBytes: settings2.get("inputCacheBytes"),
+          inputCacheTtlMs: settings2.get("inputCacheTtlMs"),
+          directFetchHosts: settings2.get("directFetchHosts"),
+          devSuppressWriteFailures: config2.devSuppressWriteFailures,
+          devForceReadingView: config2.devForceReadingView
+        }
+      };
+    }
     async function dirMtimesUnchanged(vaultPath, dirMtimes) {
       const checks = await Promise.all(
         Object.entries(dirMtimes).map(async ([relDir, oldMtime]) => {
-          const absDir = relDir ? path2.join(vaultPath, relDir.split("/").join(path2.sep)) : vaultPath;
+          const absDir = fromVaultRel(vaultPath, relDir);
           try {
             const s = await fsp.stat(absDir);
             return s.mtimeMs === oldMtime;
@@ -34309,46 +36289,187 @@ var require_bootstrap = __commonJS({
         return null;
       }
       const cached = cache.get(vaultId);
-      if (cached && await dirMtimesUnchanged(vaultPath, cached.dirMtimes)) {
+      const revalidate = revalidateOnce.delete(vaultId);
+      if (cached) {
+        if (!(watcher2.isWatching(vaultId) && !revalidate) && !await dirMtimesUnchanged(vaultPath, cached.dirMtimes)) {
+          notifyStaleEntryServed(vaultId);
+        }
         return cached;
       }
       const t0 = Date.now();
-      const etag = '"' + bootNonce + "-" + ++revisionCounter + '"';
-      const vault = buildVaultInfo(vaultId, vaultPath);
-      const { tree, dirMtimes } = await walkTree(vaultPath);
-      const response = {
-        vault,
-        vaultList: buildVaultList(),
-        tree,
-        treeRevision: etag,
-        // In demo mode, hide server-side plugins from the client.
-        plugins: config2.demoMode ? [] : getDiscoveredPlugins(),
-        virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion2()),
-        settings: {
-          contentCacheBytes: settings2.get("contentCacheBytes"),
-          inputCacheBytes: settings2.get("inputCacheBytes"),
-          inputCacheTtlMs: settings2.get("inputCacheTtlMs"),
-          directFetchHosts: settings2.get("directFetchHosts")
-        }
-      };
-      const jsonBuf = Buffer.from(JSON.stringify(response));
-      let compressed = {};
+      const etag = nextEtag();
+      const crawl = beginCrawl(vaultId);
       try {
-        compressed = await preCompress(jsonBuf);
-      } catch (e) {
-        console.warn("[bootstrap] precompression failed:", e.message);
+        const { tree, dirMtimes } = await crawlVault(vaultId, vaultPath);
+        const response = buildResponse(vaultId, vaultPath, tree, etag);
+        const entry = { response, dirMtimes, compressed: {}, etag };
+        await getOrCompress(entry);
+        await enqueue(vaultId, () => swapEntry(vaultId, vaultPath, entry, crawl));
+        const ms = Date.now() - t0;
+        const fileCount = Object.keys(tree).filter(
+          (k) => tree[k].type === "file"
+        ).length;
+        const dirCount = Object.keys(dirMtimes).length;
+        console.log(
+          `[bootstrap] vault=${vaultId} build files=${fileCount} dirs=${dirCount} time=${ms}ms`
+        );
+        return entry;
+      } finally {
+        endCrawl(vaultId, crawl);
       }
-      const entry = { response, dirMtimes, compressed, etag };
+    }
+    async function swapEntry(vaultId, vaultPath, entry, crawl) {
+      if (activeCrawls.get(vaultId) !== crawl) {
+        return;
+      }
+      try {
+        let changed = false;
+        for (const mutation of crawl.mutations) {
+          const applied = await applyMutationRecord(vaultPath, entry, mutation);
+          changed = changed || applied;
+        }
+        if (changed) {
+          markCompressionStale(entry);
+        }
+      } catch (e) {
+        console.warn(`[bootstrap] replay failed on vault ${vaultId}:`, e.message);
+        invalidateVault(vaultId);
+        return;
+      }
+      if (activeCrawls.get(vaultId) !== crawl) {
+        return;
+      }
+      endCrawl(vaultId, crawl);
       cache.set(vaultId, entry);
-      const ms = Date.now() - t0;
-      const fileCount = Object.keys(tree).filter(
-        (k) => tree[k].type === "file"
-      ).length;
-      const dirCount = Object.keys(dirMtimes).length;
-      console.log(
-        `[bootstrap] vault=${vaultId} build files=${fileCount} dirs=${dirCount} time=${ms}ms`
-      );
-      return entry;
+      notifyEntrySwapped(vaultId, entry.etag);
+    }
+    function pendingRelPaths(vaultPath) {
+      const relPaths = /* @__PURE__ */ new Set();
+      for (const absPath of pendingPaths()) {
+        const relPath = toVaultRel(path2.relative(vaultPath, absPath));
+        if (relPath && relPath !== ".." && !relPath.startsWith("../")) {
+          relPaths.add(relPath);
+        }
+      }
+      return relPaths;
+    }
+    function getParentDirs(path3) {
+      const dirs = [];
+      let lastSlash = path3.lastIndexOf("/");
+      while (lastSlash > 0) {
+        dirs.push(path3.slice(0, lastSlash));
+        lastSlash = path3.lastIndexOf("/", lastSlash - 1);
+      }
+      return dirs;
+    }
+    function isPathInAnySubtree(path3, roots) {
+      return roots.has(path3) || getParentDirs(path3).some((dir) => roots.has(dir));
+    }
+    function buildExclusionPredicate(mutationRecords, pending, includeIgnored = false) {
+      const skippedSubtrees = /* @__PURE__ */ new Set();
+      const skippedDirs = /* @__PURE__ */ new Set();
+      for (const mutation of mutationRecords) {
+        const paths = [mutation.path];
+        if (mutation.toPath) {
+          paths.push(mutation.toPath);
+        }
+        for (const path3 of paths) {
+          skippedSubtrees.add(path3);
+          for (const dir of getParentDirs(path3)) {
+            skippedDirs.add(dir);
+          }
+        }
+      }
+      const isExcluded = (path3) => !includeIgnored && watcher2.isIgnoredPath(path3) || pending.has(path3) || skippedDirs.has(path3) || isPathInAnySubtree(path3, skippedSubtrees);
+      return isExcluded;
+    }
+    function nodesEqual(a, b) {
+      return a.type === b.type && a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime;
+    }
+    function diffTrees(stored, fresh, excluded) {
+      const missing = [];
+      const extra = [];
+      const changed = [];
+      for (const path3 of Object.keys(fresh)) {
+        if (excluded(path3)) {
+          continue;
+        }
+        const node = stored[path3];
+        if (!node) {
+          missing.push(path3);
+        } else if (!nodesEqual(node, fresh[path3])) {
+          changed.push(path3);
+        }
+      }
+      for (const path3 of Object.keys(stored)) {
+        if (!(path3 in fresh) && !excluded(path3)) {
+          extra.push(path3);
+        }
+      }
+      return { missing, extra, changed };
+    }
+    var DRIFT_SAMPLE = 5;
+    function describeDrift(drift) {
+      const paths = [...drift.missing, ...drift.extra, ...drift.changed];
+      const rest = paths.length - DRIFT_SAMPLE;
+      const sample = paths.slice(0, DRIFT_SAMPLE).join(", ") + (rest > 0 ? `, +${rest}` : "");
+      return `missing=${drift.missing.length} extra=${drift.extra.length} changed=${drift.changed.length} (${sample})`;
+    }
+    function adoptDirMtimes(vaultId, crawl, entry, dirMtimes) {
+      if (activeCrawls.get(vaultId) !== crawl || cache.get(vaultId) !== entry) {
+        return;
+      }
+      for (const dir of Object.keys(entry.dirMtimes)) {
+        if (dir in dirMtimes) {
+          entry.dirMtimes[dir] = dirMtimes[dir];
+        }
+      }
+    }
+    async function reconcileVault(vaultId, { includeIgnored = false } = {}) {
+      const vaultPath = config2.getVaultPath(vaultId);
+      if (!vaultPath || isCrawling(vaultId) || !cache.has(vaultId)) {
+        return null;
+      }
+      const crawl = beginCrawl(vaultId);
+      const snapshot = pendingRelPaths(vaultPath);
+      try {
+        const { tree, dirMtimes } = await crawlVault(vaultId, vaultPath);
+        const entry = cache.get(vaultId);
+        if (!entry) {
+          return null;
+        }
+        const pending = /* @__PURE__ */ new Set([...snapshot, ...pendingRelPaths(vaultPath)]);
+        const drift = diffTrees(
+          entry.response.tree,
+          tree,
+          buildExclusionPredicate(crawl.mutations, pending, includeIgnored)
+        );
+        const drifted = drift.missing.length + drift.extra.length + drift.changed.length > 0;
+        if (!drifted) {
+          await enqueue(
+            vaultId,
+            () => adoptDirMtimes(vaultId, crawl, entry, dirMtimes)
+          );
+          return { drifted, ...drift };
+        }
+        console.warn(
+          `[tree-reconcile] vault=${vaultId} drift ${describeDrift(drift)}`
+        );
+        const etag = nextEtag();
+        const replacement = {
+          response: buildResponse(vaultId, vaultPath, tree, etag),
+          dirMtimes,
+          compressed: {},
+          etag
+        };
+        await enqueue(
+          vaultId,
+          () => swapEntry(vaultId, vaultPath, replacement, crawl)
+        );
+        return { drifted, ...drift };
+      } finally {
+        endCrawl(vaultId, crawl);
+      }
     }
     async function getOrBuild(vaultId) {
       if (pendingBuilds.has(vaultId)) {
@@ -34360,64 +36481,170 @@ var require_bootstrap = __commonJS({
       pendingBuilds.set(vaultId, promise);
       return promise;
     }
-    function invalidateVault(vaultId) {
-      cache.delete(vaultId);
-    }
-    function invalidateAll() {
-      cache.clear();
-    }
     async function warmUp() {
       const ids = Object.keys(config2.vaults);
       for (const id of ids) {
         try {
-          await buildEntry(id);
+          await getOrBuild(id);
         } catch (e) {
           console.warn(`[bootstrap] warm-up failed for vault ${id}:`, e.message);
         }
       }
     }
-    router.get("/", async (req, res) => {
-      const vaultId = req.query.vault || config2.defaultVaultId;
-      if (!vaultId || !config2.getVaultPath(vaultId)) {
-        return res.status(404).json({ error: "Vault not found", id: vaultId });
+    module2.exports = {
+      buildVaultInfo,
+      walkTree,
+      getOrBuild,
+      reconcileVault,
+      warmUp
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/index.js
+var require_cache = __commonJS({
+  "apps/ignis-server/server/cache/index.js"(exports2, module2) {
+    var {
+      buildVaultInfo,
+      walkTree,
+      getOrBuild,
+      reconcileVault,
+      warmUp
+    } = require_crawl();
+    var { applyMutation } = require_apply();
+    var { getOrCompress } = require_compress();
+    var {
+      invalidateVault,
+      invalidateAll,
+      markForRevalidation
+    } = require_invalidate();
+    var {
+      onEntrySwapped,
+      onVaultInvalidated,
+      onStaleEntryServed,
+      lastCrawlAt
+    } = require_state();
+    var { ignoreSuggestions } = require_ignore_suggestions();
+    module2.exports = {
+      buildVaultInfo,
+      walkTree,
+      getOrBuild,
+      reconcileVault,
+      lastCrawlAt,
+      getOrCompress,
+      applyMutation,
+      invalidateVault,
+      invalidateAll,
+      markForRevalidation,
+      onEntrySwapped,
+      onVaultInvalidated,
+      onStaleEntryServed,
+      ignoreSuggestions,
+      warmUp
+    };
+  }
+});
+
+// apps/ignis-server/server/cache/reconcile.js
+var require_reconcile = __commonJS({
+  "apps/ignis-server/server/cache/reconcile.js"(exports2, module2) {
+    var { watcher: watcher2 } = require_src2();
+    var config2 = require_config();
+    var bootstrapCache2 = require_cache();
+    var RECONCILE_INTERVAL_MS = 30 * 60 * 1e3;
+    var RECENT_CRAWL_MS = 60 * 1e3;
+    var RECONCILE_RELEASE_MS = 300 * 1e3;
+    var timers = /* @__PURE__ */ new Map();
+    var queuedVaults = /* @__PURE__ */ new Set();
+    var runningReconcile = null;
+    var reconcilingVault = null;
+    function runReconcile(vaultId) {
+      let timer = null;
+      const released = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[tree-reconcile] vault=${vaultId} reconcile has not completed in ${Math.round(RECONCILE_RELEASE_MS / 1e3)}s, resuming schedule`
+          );
+          resolve();
+        }, RECONCILE_RELEASE_MS);
+        timer.unref?.();
+      });
+      const work = Promise.resolve().then(() => bootstrapCache2.reconcileVault(vaultId)).catch((e) => {
+        if (config2.getVaultPath(vaultId)) {
+          console.warn(`[tree-reconcile] vault=${vaultId} failed:`, e.message);
+        }
+      }).finally(() => clearTimeout(timer));
+      return Promise.race([work, released]);
+    }
+    function pump() {
+      if (runningReconcile || queuedVaults.size === 0) {
+        return;
       }
-      try {
-        const entry = await getOrBuild(vaultId);
-        if (!entry) {
-          return res.status(404).json({ error: "Vault not found" });
-        }
-        res.setHeader("Cache-Control", "no-store");
-        if (req._demoSessionId) {
-          return res.json(JSON.parse(JSON.stringify(entry.response)));
-        }
-        const ae = req.headers["accept-encoding"] || "";
-        const { compressed } = entry;
-        let buf, encoding;
-        if (ae.includes("br") && compressed.br) {
-          buf = compressed.br;
-          encoding = "br";
-        } else if ((ae.includes("gzip") || ae.includes("deflate")) && compressed.gz) {
-          buf = compressed.gz;
-          encoding = "gzip";
-        }
-        if (buf) {
-          res.setHeader("Content-Type", "application/json; charset=utf-8");
-          res.setHeader("Content-Encoding", encoding);
-          res.setHeader("Content-Length", buf.length);
-          return res.status(200).end(buf);
-        }
-        res.json(entry.response);
-      } catch (e) {
-        console.error("[bootstrap] error:", e);
-        res.status(500).json(sanitizeError(e));
+      const vaultId = queuedVaults.values().next().value;
+      queuedVaults.delete(vaultId);
+      reconcilingVault = vaultId;
+      runningReconcile = runReconcile(vaultId).then(() => {
+        runningReconcile = null;
+        reconcilingVault = null;
+        pump();
+      });
+    }
+    function scheduleReconcile(vaultId) {
+      if (queuedVaults.has(vaultId) || reconcilingVault === vaultId) {
+        return;
       }
-    });
-    module2.exports = router;
-    module2.exports.invalidateVault = invalidateVault;
-    module2.exports.invalidateAll = invalidateAll;
-    module2.exports.warmUp = warmUp;
-    module2.exports.walkTree = walkTree;
-    module2.exports.getOrBuild = getOrBuild;
+      queuedVaults.add(vaultId);
+      pump();
+    }
+    function scheduleUnlessRecent(vaultId) {
+      if (Date.now() - bootstrapCache2.lastCrawlAt(vaultId) < RECENT_CRAWL_MS) {
+        return;
+      }
+      scheduleReconcile(vaultId);
+    }
+    function tick(vaultId) {
+      if (!watcher2.isWatching(vaultId)) {
+        cancelVault(vaultId);
+        return;
+      }
+      scheduleUnlessRecent(vaultId);
+    }
+    function startSchedule(vaultId) {
+      scheduleUnlessRecent(vaultId);
+      if (timers.has(vaultId)) {
+        return;
+      }
+      const timer = setInterval(() => tick(vaultId), RECONCILE_INTERVAL_MS);
+      timer.unref?.();
+      timers.set(vaultId, timer);
+    }
+    function cancelVault(vaultId) {
+      clearInterval(timers.get(vaultId));
+      timers.delete(vaultId);
+      queuedVaults.delete(vaultId);
+    }
+    function _reset() {
+      for (const timer of timers.values()) {
+        clearInterval(timer);
+      }
+      timers.clear();
+      queuedVaults.clear();
+      runningReconcile = null;
+      reconcilingVault = null;
+    }
+    async function _drain() {
+      while (runningReconcile || queuedVaults.size > 0) {
+        pump();
+        await runningReconcile;
+      }
+    }
+    module2.exports = {
+      startSchedule,
+      scheduleReconcile,
+      cancelVault,
+      _reset,
+      _drain
+    };
   }
 });
 
@@ -34540,7 +36767,7 @@ var require_demo_provision = __commonJS({
     var fsp = fs2.promises;
     var path2 = require("path");
     var config2 = require_config();
-    var bootstrapRoutes2 = require_bootstrap();
+    var bootstrapCache2 = require_cache();
     var { sessions, makeStorageName } = require_demo_sessions();
     var DEFAULT_VAULT_NAME = "Welcome";
     async function dirSize(dir) {
@@ -34610,7 +36837,7 @@ var require_demo_provision = __commonJS({
       }
       await fsp.cp(config2.demoTemplateDir, vaultPath, { recursive: true });
       config2.refreshVaults();
-      bootstrapRoutes2.invalidateVault(storageName);
+      bootstrapCache2.invalidateVault(storageName);
       s.vaults.add(userVaultName);
       await recomputeBytes(sessionId);
       return { storageName, userVaultName };
@@ -34654,7 +36881,8 @@ var require_demo_cleanup = __commonJS({
     var path2 = require("path");
     var config2 = require_config();
     var { watcher: watcher2 } = require_src2();
-    var bootstrapRoutes2 = require_bootstrap();
+    var bootstrapCache2 = require_cache();
+    var treeReconcile2 = require_reconcile();
     var {
       sessions,
       makeStorageName,
@@ -34681,7 +36909,8 @@ var require_demo_cleanup = __commonJS({
         } catch (e) {
           console.warn(`[demo] Failed to remove ${storageName}:`, e.message);
         }
-        bootstrapRoutes2.invalidateVault(storageName);
+        treeReconcile2.cancelVault(storageName);
+        bootstrapCache2.invalidateVault(storageName);
       }
       config2.refreshVaults();
       sessions.delete(sessionId);
@@ -34720,7 +36949,8 @@ var require_demo_cleanup = __commonJS({
           const orphanPath = path2.join(config2.vaultRoot, entry.name);
           try {
             await fsp.rm(orphanPath, { recursive: true, force: true });
-            bootstrapRoutes2.invalidateVault(entry.name);
+            treeReconcile2.cancelVault(entry.name);
+            bootstrapCache2.invalidateVault(entry.name);
             console.log(`[demo] Removed orphan ${entry.name}`);
           } catch {
           }
@@ -34781,7 +37011,7 @@ var require_demo_middleware = __commonJS({
     function inboundTranslator(req, res, next) {
       const sessionId = getOrCreateSession(req, res, { peek: true });
       if (!sessionId) {
-        return next();
+        return res.status(401).json({ error: "No demo session" });
       }
       touchSession(sessionId);
       req._demoSessionId = sessionId;
@@ -34812,6 +37042,26 @@ var require_demo_middleware = __commonJS({
           obj.name = userName;
         }
       }
+    }
+    function vaultFilesTranslator(req, res, next) {
+      const sessionId = getOrCreateSession(req, res, { peek: true });
+      if (!sessionId) {
+        return res.status(401).json({ error: "No demo session" });
+      }
+      const parts = req.url.split("/");
+      const vault = decodeURIComponent(parts[1] || "");
+      if (!vault) {
+        return next();
+      }
+      if (vault.startsWith("demo-")) {
+        if (tryParseUserVaultName(sessionId, vault) === null) {
+          return res.status(403).json({ error: "Vault not found" });
+        }
+        return next();
+      }
+      parts[1] = encodeURIComponent(makeStorageName(sessionId, vault));
+      req.url = parts.join("/");
+      next();
     }
     function outboundTranslator(req, res, next) {
       const sessionId = req._demoSessionId;
@@ -35027,6 +37277,7 @@ var require_demo_middleware = __commonJS({
       captureOriginalVaultName,
       inboundTranslator,
       outboundTranslator,
+      vaultFilesTranslator,
       vaultsPerSessionEnforcer,
       quotaEnforcer,
       proxyAllowlist,
@@ -35071,6 +37322,13 @@ var require_demo_ws = __commonJS({
               return;
             }
             touchSession(sessionId);
+          } else {
+            const socket = rest[0];
+            if (socket && socket.writable) {
+              socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+              socket.destroy();
+            }
+            return;
           }
         }
         return origEmit(event, req, ...rest);
@@ -35090,6 +37348,7 @@ var require_demo = __commonJS({
       captureOriginalVaultName,
       inboundTranslator,
       outboundTranslator,
+      vaultFilesTranslator,
       vaultsPerSessionEnforcer,
       quotaEnforcer,
       proxyAllowlist,
@@ -35119,6 +37378,7 @@ var require_demo = __commonJS({
       );
       app2.use(["/api/vault", "/api/fs", "/api/bootstrap"], inboundTranslator);
       app2.use(["/api/vault", "/api/fs", "/api/bootstrap"], outboundTranslator);
+      app2.use("/vault-files", vaultFilesTranslator);
       app2.use("/api/vault", vaultsPerSessionEnforcer);
       app2.use("/api/fs", quotaEnforcer);
       app2.use("/api/vault", trackVaultLifecycle);
@@ -35154,8 +37414,48 @@ var require_digest_auth = __commonJS({
   "apps/ignis-server/server/digest-auth.js"(exports2, module2) {
     var crypto = require("crypto");
     var REALM = "vitreus-lan";
-    var NONCE_TTL = 10 * 60 * 1e3;
+    var NONCE_TTL = 90 * 1e3;
     var issuedNonces = /* @__PURE__ */ new Map();
+    var runtimeCreds = null;
+    function setCredentials(user, pass) {
+      runtimeCreds = pass ? { user, pass } : null;
+    }
+    function getCredentials() {
+      if (runtimeCreds)
+        return runtimeCreds;
+      const u = process.env.IGNIS_AUTH_USER;
+      const p = process.env.IGNIS_AUTH_PASS;
+      return u && p ? { user: u, pass: p } : null;
+    }
+    var LOCK_BASE_MS = 60 * 1e3;
+    var LOCK_MAX_MS = 15 * 60 * 1e3;
+    var FAIL_LIMIT = 5;
+    var failTable = /* @__PURE__ */ new Map();
+    function lockRemaining(ip, now) {
+      const rec = failTable.get(ip);
+      if (!rec || !rec.lockedUntil || rec.lockedUntil <= now)
+        return 0;
+      return rec.lockedUntil - now;
+    }
+    function recordFailure(ip, now) {
+      let rec = failTable.get(ip) || { fails: 0, lockedUntil: 0 };
+      rec.fails += 1;
+      if (rec.fails >= FAIL_LIMIT) {
+        const extra = Math.min(LOCK_BASE_MS * Math.pow(2, rec.fails - FAIL_LIMIT), LOCK_MAX_MS);
+        rec.lockedUntil = now + extra;
+        rec.fails = 0;
+      }
+      failTable.set(ip, rec);
+      if (failTable.size > 1024) {
+        for (const [k, r] of failTable) {
+          if (!r.lockedUntil || r.lockedUntil <= now)
+            failTable.delete(k);
+        }
+      }
+    }
+    function recordSuccess(ip) {
+      failTable.delete(ip);
+    }
     function md5(s) {
       return crypto.createHash("md5").update(s).digest("hex");
     }
@@ -35165,18 +37465,17 @@ var require_digest_auth = __commonJS({
     function newNonce() {
       const now = Date.now();
       if (issuedNonces.size > 512) {
-        for (const [k, ts] of issuedNonces) {
-          if (now - ts > NONCE_TTL) {
+        for (const [k, v] of issuedNonces) {
+          if (now - v.ts > NONCE_TTL)
             issuedNonces.delete(k);
-          }
         }
       }
       const n = crypto.randomBytes(16).toString("hex");
-      issuedNonces.set(n, now);
+      issuedNonces.set(n, { ts: now, lastNc: 0 });
       return n;
     }
-    function challenge() {
-      return 'Digest realm="' + REALM + '", qop="auth", nonce="' + newNonce() + '", algorithm=MD5';
+    function challenge(stale) {
+      return 'Digest realm="' + REALM + '", qop="auth", nonce="' + newNonce() + '", algorithm=MD5' + (stale ? ', stale="true"' : "");
     }
     function parseDigestParams(rest) {
       const out = {};
@@ -35189,29 +37488,33 @@ var require_digest_auth = __commonJS({
     }
     function createDigestAuth() {
       return function digestAuth(req, res, next) {
-        const user = process.env.IGNIS_AUTH_USER;
-        const pass = process.env.IGNIS_AUTH_PASS;
-        if (!user || !pass || isLoopback(req.ip || "")) {
+        const creds = getCredentials();
+        const ip = req.ip || "";
+        if (!creds || isLoopback(ip)) {
           return next();
         }
         const now = Date.now();
-        for (const [k, ts2] of issuedNonces) {
-          if (now - ts2 > NONCE_TTL) {
+        const lockMs = lockRemaining(ip, now);
+        if (lockMs > 0) {
+          res.set("Retry-After", Math.ceil(lockMs / 1e3));
+          return res.status(429).send("429 Too Many Attempts");
+        }
+        for (const [k, v] of issuedNonces) {
+          if (now - v.ts > NONCE_TTL)
             issuedNonces.delete(k);
-          }
         }
         const h = req.headers["authorization"];
         if (!h || !/^Digest\s/i.test(h)) {
-          res.set("WWW-Authenticate", challenge());
+          res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
         }
         const p = parseDigestParams(h.slice(h.indexOf(" ") + 1));
-        const ts = issuedNonces.get(p.nonce);
-        if (!ts || !p.response || !p.username) {
-          res.set("WWW-Authenticate", challenge());
+        const rec = issuedNonces.get(p.nonce);
+        if (!rec || !p.response || !p.username) {
+          res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
         }
-        const ha1 = md5(user + ":" + REALM + ":" + pass);
+        const ha1 = md5(creds.user + ":" + REALM + ":" + creds.pass);
         const ha2 = md5(req.method + ":" + p.uri);
         let expected;
         if (p.qop === "auth" && p.nc && p.cnonce) {
@@ -35219,14 +37522,24 @@ var require_digest_auth = __commonJS({
         } else {
           expected = md5(ha1 + ":" + p.nonce + ":" + ha2);
         }
-        if (p.username !== user || expected !== p.response) {
-          res.set("WWW-Authenticate", challenge());
+        if (p.username !== creds.user || expected !== p.response) {
+          recordFailure(ip, now);
+          res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
         }
+        const ncNum = parseInt(p.nc || "0", 16);
+        if (p.qop === "auth") {
+          if (!Number.isFinite(ncNum) || ncNum <= rec.lastNc) {
+            res.set("WWW-Authenticate", challenge(true));
+            return res.status(401).send("401 Stale Nonce");
+          }
+          rec.lastNc = ncNum;
+        }
+        recordSuccess(ip);
         return next();
       };
     }
-    module2.exports = { createDigestAuth };
+    module2.exports = { createDigestAuth, setCredentials, getCredentials };
   }
 });
 
@@ -35308,6 +37621,10 @@ var require_brace_expansion = __commonJS({
     var escClose = "\0CLOSE" + Math.random() + "\0";
     var escComma = "\0COMMA" + Math.random() + "\0";
     var escPeriod = "\0PERIOD" + Math.random() + "\0";
+    var EXPANSION_MAX = 1e5;
+    var EXPANSION_MAX_LENGTH = 4e6;
+    var EXPANSION_MAX_DEPTH = 1e3;
+    var EXPANSION_MAX_REWRITES = 1e3;
     function numeric(str) {
       return parseInt(str, 10) == str ? parseInt(str, 10) : str.charCodeAt(0);
     }
@@ -35317,35 +37634,49 @@ var require_brace_expansion = __commonJS({
     function unescapeBraces(str) {
       return str.split(escSlash).join("\\").split(escOpen).join("{").split(escClose).join("}").split(escComma).join(",").split(escPeriod).join(".");
     }
-    function parseCommaParts(str) {
-      if (!str)
-        return [""];
-      var parts = [];
-      var m = balanced("{", "}", str);
-      if (!m)
-        return str.split(",");
-      var pre = m.pre;
-      var body = m.body;
-      var post = m.post;
-      var p = pre.split(",");
-      p[p.length - 1] += "{" + body + "}";
-      var postParts = parseCommaParts(post);
-      if (post.length) {
-        p[p.length - 1] += postParts.shift();
-        p.push.apply(p, postParts);
+    function pushAll(target, items) {
+      for (var i = 0; i < items.length; i++) {
+        target.push(items[i]);
       }
-      parts.push.apply(parts, p);
-      return parts;
+    }
+    function parseCommaParts(str) {
+      var parts = [];
+      var carry = "";
+      for (; ; ) {
+        var m = balanced("{", "}", str);
+        if (!m) {
+          var tail = str.split(",");
+          tail[0] = carry + tail[0];
+          pushAll(parts, tail);
+          return parts;
+        }
+        var pre = m.pre;
+        var body = m.body;
+        var post = m.post;
+        var p = pre.split(",");
+        p[0] = carry + p[0];
+        p[p.length - 1] += "{" + body + "}";
+        if (!post.length) {
+          pushAll(parts, p);
+          return parts;
+        }
+        carry = p.pop();
+        pushAll(parts, p);
+        str = post;
+      }
     }
     function expandTop(str, options) {
       if (!str)
         return [];
       options = options || {};
-      var max = options.max == null ? Infinity : options.max;
+      var max = options.max == null ? EXPANSION_MAX : options.max;
+      var maxLength = options.maxLength == null ? EXPANSION_MAX_LENGTH : options.maxLength;
+      var maxDepth = options.maxDepth == null ? EXPANSION_MAX_DEPTH : options.maxDepth;
+      var maxRewrites = options.maxRewrites == null ? EXPANSION_MAX_REWRITES : options.maxRewrites;
       if (str.substr(0, 2) === "{}") {
         str = "\\{\\}" + str.substr(2);
       }
-      return expand(escapeBraces(str), max, true).map(unescapeBraces);
+      return expand(escapeBraces(str), max, maxLength, maxDepth, 0, maxRewrites, true).map(unescapeBraces);
     }
     function embrace(str) {
       return "{" + str + "}";
@@ -35359,94 +37690,174 @@ var require_brace_expansion = __commonJS({
     function gte(i, y) {
       return i >= y;
     }
-    function expand(str, max, isTop) {
-      var expansions = [];
-      var m = balanced("{", "}", str);
-      if (!m)
-        return [str];
-      var pre = m.pre;
-      var post = m.post.length ? expand(m.post, max, false) : [""];
-      if (/\$$/.test(m.pre)) {
-        for (var k = 0; k < post.length && k < max; k++) {
-          var expansion = pre + "{" + m.body + "}" + post[k];
-          expansions.push(expansion);
+    function combine(acc, pre, values, max, maxLength, dropEmpties) {
+      var out = [];
+      var length = 0;
+      for (var a = 0; a < acc.length; a++) {
+        for (var v = 0; v < values.length; v++) {
+          if (out.length >= max)
+            return out;
+          var expansion = acc[a] + pre + values[v];
+          if (dropEmpties && !expansion)
+            continue;
+          if (length + expansion.length > maxLength)
+            return out;
+          out.push(expansion);
+          length += expansion.length;
         }
-      } else {
+      }
+      return out;
+    }
+    function expandSequence(body, isAlphaSequence, max, maxLength) {
+      var n = body.split(/\.\./);
+      var N = [];
+      if (n[0] === void 0 || n[1] === void 0) {
+        return N;
+      }
+      var x = numeric(n[0]);
+      var y = numeric(n[1]);
+      var width = Math.max(n[0].length, n[1].length);
+      var incr = n.length === 3 && n[2] !== void 0 ? Math.max(Math.abs(numeric(n[2])), 1) : 1;
+      var test = lte;
+      var reverse = y < x;
+      if (reverse) {
+        incr *= -1;
+        test = gte;
+      }
+      var pad = n.some(isPadded);
+      var length = 0;
+      for (var i = x; test(i, y) && N.length < max; i += incr) {
+        var c;
+        if (isAlphaSequence) {
+          c = String.fromCharCode(i);
+          if (c === "\\") {
+            c = "";
+          }
+        } else {
+          c = String(i);
+          if (pad) {
+            var need = width - c.length;
+            if (need > 0) {
+              var z = new Array(need + 1).join("0");
+              if (i < 0) {
+                c = "-" + z + c.slice(1);
+              } else {
+                c = z + c;
+              }
+            }
+          }
+        }
+        if (length + c.length > maxLength)
+          break;
+        N.push(c);
+        length += c.length;
+      }
+      return N;
+    }
+    function expand(str, max, maxLength, maxDepth, depth, maxRewrites, isTop) {
+      if (depth > maxDepth) {
+        return [str];
+      }
+      var acc = [""];
+      var rewrites = 0;
+      var dropEmpties = false;
+      var firstGroup = true;
+      for (; ; ) {
+        const m = balanced("{", "}", str);
+        if (!m) {
+          return combine(acc, str, [""], max, maxLength, dropEmpties);
+        }
+        const pre = m.pre;
+        if (/\$$/.test(pre)) {
+          acc = combine(
+            acc,
+            pre + "{" + m.body + "}",
+            [""],
+            max,
+            maxLength,
+            dropEmpties && !m.post.length
+          );
+          firstGroup = false;
+          if (!m.post.length)
+            break;
+          str = m.post;
+          continue;
+        }
         var isNumericSequence = /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.test(m.body);
         var isAlphaSequence = /^[a-zA-Z]\.\.[a-zA-Z](?:\.\.-?\d+)?$/.test(m.body);
         var isSequence = isNumericSequence || isAlphaSequence;
         var isOptions = m.body.indexOf(",") >= 0;
         if (!isSequence && !isOptions) {
-          if (m.post.match(/,(?!,).*\}/)) {
+          if (rewrites < maxRewrites && m.post.match(/,(?!,).*\}/)) {
+            rewrites++;
             str = m.pre + "{" + m.body + escClose + m.post;
-            return expand(str, max, true);
+            isTop = true;
+            continue;
           }
-          return [str];
+          return combine(
+            acc,
+            pre + "{" + m.body + "}" + m.post,
+            [""],
+            max,
+            maxLength,
+            dropEmpties
+          );
         }
-        var n;
+        if (firstGroup) {
+          dropEmpties = isTop && !isSequence;
+          firstGroup = false;
+        }
+        var values;
         if (isSequence) {
-          n = m.body.split(/\.\./);
+          values = expandSequence(m.body, isAlphaSequence, max, maxLength);
         } else {
-          n = parseCommaParts(m.body);
-          if (n.length === 1) {
-            n = expand(n[0], max, false).map(embrace);
+          var n = parseCommaParts(m.body);
+          if (n.length === 1 && n[0] !== void 0) {
+            n = expand(n[0], max, maxLength, maxDepth, depth + 1, maxRewrites, false).map(embrace);
             if (n.length === 1) {
-              return post.map(function(p) {
-                return m.pre + n[0] + p;
-              });
+              acc = combine(
+                acc,
+                pre + n[0],
+                [""],
+                max,
+                maxLength,
+                dropEmpties && !m.post.length
+              );
+              if (!m.post.length)
+                break;
+              str = m.post;
+              continue;
             }
           }
-        }
-        var N;
-        if (isSequence) {
-          var x = numeric(n[0]);
-          var y = numeric(n[1]);
-          var width = Math.max(n[0].length, n[1].length);
-          var incr = n.length == 3 ? Math.max(Math.abs(numeric(n[2])), 1) : 1;
-          var test = lte;
-          var reverse = y < x;
-          if (reverse) {
-            incr *= -1;
-            test = gte;
+          var dropsEmpties = dropEmpties && !m.post.length && !pre;
+          for (var d = 0; dropsEmpties && d < acc.length; d++) {
+            if (acc[d]) {
+              dropsEmpties = false;
+            }
           }
-          var pad = n.some(isPadded);
-          N = [];
-          for (var i = x; test(i, y) && N.length < max; i += incr) {
-            var c;
-            if (isAlphaSequence) {
-              c = String.fromCharCode(i);
-              if (c === "\\")
-                c = "";
-            } else {
-              c = String(i);
-              if (pad) {
-                var need = width - c.length;
-                if (need > 0) {
-                  var z = new Array(need + 1).join("0");
-                  if (i < 0)
-                    c = "-" + z + c.slice(1);
-                  else
-                    c = z + c;
+          values = [];
+          var valuesLength = 0;
+          outer:
+            for (var j = 0; j < n.length; j++) {
+              var expanded = expand(n[j], max, maxLength, maxDepth, depth + 1, maxRewrites, false);
+              for (var k = 0; k < expanded.length; k++) {
+                var v = expanded[k];
+                if (dropsEmpties && !v)
+                  continue;
+                if (values.length >= max || valuesLength + v.length > maxLength) {
+                  break outer;
                 }
+                values.push(v);
+                valuesLength += v.length;
               }
             }
-            N.push(c);
-          }
-        } else {
-          N = [];
-          for (var j = 0; j < n.length; j++) {
-            N.push.apply(N, expand(n[j], max, false));
-          }
         }
-        for (var j = 0; j < N.length; j++) {
-          for (var k = 0; k < post.length && expansions.length < max; k++) {
-            var expansion = pre + N[j] + post[k];
-            if (!isTop || isSequence || expansion)
-              expansions.push(expansion);
-          }
-        }
+        acc = combine(acc, pre, values, max, maxLength, dropEmpties && !m.post.length);
+        if (!m.post.length)
+          break;
+        str = m.post;
       }
-      return expansions;
+      return acc;
     }
   }
 });
@@ -41228,7 +43639,7 @@ var require_identity = __commonJS({
 });
 
 // node_modules/lodash/_apply.js
-var require_apply = __commonJS({
+var require_apply2 = __commonJS({
   "node_modules/lodash/_apply.js"(exports2, module2) {
     function apply(func, thisArg, args) {
       switch (args.length) {
@@ -41250,7 +43661,7 @@ var require_apply = __commonJS({
 // node_modules/lodash/_overRest.js
 var require_overRest = __commonJS({
   "node_modules/lodash/_overRest.js"(exports2, module2) {
-    var apply = require_apply();
+    var apply = require_apply2();
     var nativeMax = Math.max;
     function overRest(func, start, transform) {
       start = nativeMax(start === void 0 ? func.length - 1 : start, 0);
@@ -44587,7 +46998,7 @@ var require_buffer_list = __commonJS({
 });
 
 // node_modules/readable-stream/lib/internal/streams/state.js
-var require_state = __commonJS({
+var require_state2 = __commonJS({
   "node_modules/readable-stream/lib/internal/streams/state.js"(exports2, module2) {
     "use strict";
     var { MathFloor, NumberIsInteger } = require_primordials();
@@ -45014,7 +47425,7 @@ var require_readable2 = __commonJS({
     });
     var BufferList = require_buffer_list();
     var destroyImpl = require_destroy3();
-    var { getHighWaterMark, getDefaultHighWaterMark } = require_state();
+    var { getHighWaterMark, getDefaultHighWaterMark } = require_state2();
     var {
       aggregateTwoErrors,
       codes: {
@@ -46024,7 +48435,7 @@ var require_writable = __commonJS({
     var { Buffer: Buffer2 } = require("buffer");
     var destroyImpl = require_destroy3();
     var { addAbortSignal } = require_add_abort_signal();
-    var { getHighWaterMark, getDefaultHighWaterMark } = require_state();
+    var { getHighWaterMark, getDefaultHighWaterMark } = require_state2();
     var {
       ERR_INVALID_ARG_TYPE,
       ERR_METHOD_NOT_IMPLEMENTED,
@@ -47121,7 +49532,7 @@ var require_transform = __commonJS({
     module2.exports = Transform;
     var { ERR_METHOD_NOT_IMPLEMENTED } = require_errors2().codes;
     var Duplex = require_duplex();
-    var { getHighWaterMark } = require_state();
+    var { getHighWaterMark } = require_state2();
     ObjectSetPrototypeOf(Transform.prototype, Duplex.prototype);
     ObjectSetPrototypeOf(Transform, Duplex);
     var kCallback = Symbol2("kCallback");
@@ -48322,7 +50733,7 @@ var require_stream3 = __commonJS({
       codes: { ERR_ILLEGAL_CONSTRUCTOR }
     } = require_errors2();
     var compose = require_compose();
-    var { setDefaultHighWaterMark, getDefaultHighWaterMark } = require_state();
+    var { setDefaultHighWaterMark, getDefaultHighWaterMark } = require_state2();
     var { pipeline } = require_pipeline();
     var { destroyer } = require_destroy3();
     var eos = require_end_of_stream();
@@ -55126,7 +57537,7 @@ var require_pattern = __commonJS({
 });
 
 // node_modules/glob/dist/commonjs/ignore.js
-var require_ignore = __commonJS({
+var require_ignore2 = __commonJS({
   "node_modules/glob/dist/commonjs/ignore.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
@@ -55462,7 +57873,7 @@ var require_walker = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GlobStream = exports2.GlobWalker = exports2.GlobUtil = void 0;
     var minipass_1 = require_commonjs3();
-    var ignore_js_1 = require_ignore();
+    var ignore_js_1 = require_ignore2();
     var processor_js_1 = require_processor();
     var makeIgnore = (ignore, opts) => typeof ignore === "string" ? new ignore_js_1.Ignore([ignore], opts) : Array.isArray(ignore) ? new ignore_js_1.Ignore(ignore, opts) : ignore;
     var GlobUtil = class {
@@ -56058,7 +58469,7 @@ var require_commonjs5 = __commonJS({
     Object.defineProperty(exports2, "hasMagic", { enumerable: true, get: function() {
       return has_magic_js_2.hasMagic;
     } });
-    var ignore_js_1 = require_ignore();
+    var ignore_js_1 = require_ignore2();
     Object.defineProperty(exports2, "Ignore", { enumerable: true, get: function() {
       return ignore_js_1.Ignore;
     } });
@@ -61176,19 +63587,23 @@ var require_fs = __commonJS({
     var config2 = require_config();
     var {
       writeCoalescer: writeCoalescer2,
+      watcher: watcher2,
       encodeContentDispositionFilename,
       resolveVaultPath: resolveVaultPath2,
+      toVaultRel,
       sanitizeError
     } = require_src2();
     var {
       writeCoalesced,
       getPending,
+      estimateSize,
+      pendingBuffer,
       cancelPending,
       flushPending,
       cancelPendingSubtree,
       flushPendingSubtree
     } = writeCoalescer2;
-    var bootstrapRoutes2 = require_bootstrap();
+    var bootstrapCache2 = require_cache();
     var router = express2.Router();
     function getVaultRoot(req, res) {
       const vaultId = req.query.vault || req.body?.vault || config2.defaultVaultId;
@@ -61200,10 +63615,58 @@ var require_fs = __commonJS({
       req._vaultId = vaultId;
       return vaultPath;
     }
-    function invalidateBootstrap(req) {
-      if (req._vaultId) {
-        bootstrapRoutes2.invalidateVault(req._vaultId);
+    function toRelative(vaultRoot, resolved) {
+      return toVaultRel(path2.relative(vaultRoot, resolved));
+    }
+    function isApplicable(event) {
+      return !watcher2.isIgnoredPath(event.path) && !(event.toPath && watcher2.isIgnoredPath(event.toPath));
+    }
+    async function renameEvent(fromPath, toPath, toResolved) {
+      const fromIgnored = watcher2.isIgnoredPath(fromPath);
+      const toIgnored = watcher2.isIgnoredPath(toPath);
+      if (fromIgnored === toIgnored) {
+        return { type: "rename", path: fromPath, toPath };
       }
+      if (toIgnored) {
+        return { type: "deleted", path: fromPath };
+      }
+      const stat = await fs2.promises.stat(toResolved).catch(() => null);
+      if (!stat) {
+        return [];
+      }
+      return stat.isDirectory() ? { type: "folder-created", path: toPath } : { type: "created", path: toPath };
+    }
+    async function applyToTree(req, events) {
+      if (!req._vaultId) {
+        return;
+      }
+      const vaultId = req._vaultId;
+      let batch = null;
+      try {
+        batch = [].concat(await events).filter(isApplicable);
+        if (batch.length === 0) {
+          return;
+        }
+        await bootstrapCache2.applyMutation(vaultId, batch);
+      } catch (e) {
+        const paths = batch ? batch.map((event) => event.path).join(", ") : "";
+        console.warn(
+          `[bootstrap] route apply failed on vault ${vaultId}${paths ? ` for ${paths}` : ""}:`,
+          e.message
+        );
+      }
+    }
+    async function bufferedWriteEvent(resolved, rel, result) {
+      const diskStat = await fs2.promises.stat(resolved).catch(() => null);
+      return {
+        type: "modified",
+        path: rel,
+        stat: {
+          size: result.size,
+          mtime: result.mtime,
+          ctime: diskStat ? diskStat.ctimeMs : result.mtime
+        }
+      };
     }
     function guardPath(req, res, source = "query") {
       const vaultRoot = getVaultRoot(req, res);
@@ -61232,7 +63695,7 @@ var require_fs = __commonJS({
         const buffered = getPending(resolved);
         if (buffered) {
           const diskStat = await fs2.promises.stat(resolved).catch(() => null);
-          const size = Buffer.isBuffer(buffered.data) ? buffered.data.length : Buffer.byteLength(buffered.data, buffered.encoding || "utf-8");
+          const size = estimateSize(buffered.data, buffered.encoding);
           res.json({
             type: "file",
             size,
@@ -61301,8 +63764,13 @@ var require_fs = __commonJS({
           data = Buffer.from(req.body.content, "base64");
         }
         const result = await writeCoalesced(resolved, data, encoding);
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
+        const buffered = getPending(resolved) !== null;
         res.json({ ok: true, mtime: result.mtime, size: result.size });
+        applyToTree(
+          req,
+          buffered ? bufferedWriteEvent(resolved, rel, result) : { type: "modified", path: rel }
+        );
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61315,8 +63783,9 @@ var require_fs = __commonJS({
       try {
         await flushPending(resolved);
         await fs2.promises.appendFile(resolved, req.body.content, "utf-8");
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
+        applyToTree(req, { type: "modified", path: rel });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61331,8 +63800,9 @@ var require_fs = __commonJS({
           recursive: !!req.body.recursive
         });
         cancelPending(resolved);
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
+        applyToTree(req, { type: "folder-created", path: rel });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61351,11 +63821,18 @@ var require_fs = __commonJS({
         return res.status(403).json({ error: "Invalid path" });
       }
       try {
-        await flushPending(oldResolved);
+        await flushPendingSubtree(oldResolved);
         await fs2.promises.rename(oldResolved, newResolved);
         cancelPending(newResolved);
-        invalidateBootstrap(req);
         res.json({ ok: true });
+        applyToTree(
+          req,
+          renameEvent(
+            toRelative(vaultRoot, oldResolved),
+            toRelative(vaultRoot, newResolved),
+            newResolved
+          )
+        );
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61377,8 +63854,11 @@ var require_fs = __commonJS({
         await flushPending(srcResolved);
         await fs2.promises.copyFile(srcResolved, destResolved);
         cancelPending(destResolved);
-        invalidateBootstrap(req);
         res.json({ ok: true });
+        applyToTree(req, {
+          type: "modified",
+          path: toRelative(vaultRoot, destResolved)
+        });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61388,15 +63868,17 @@ var require_fs = __commonJS({
       if (!resolved) {
         return;
       }
+      const rel = toRelative(req._vaultRoot, resolved);
       try {
         await fs2.promises.unlink(resolved);
         cancelPending(resolved);
-        invalidateBootstrap(req);
         res.json({ ok: true });
+        applyToTree(req, { type: "deleted", path: rel });
       } catch (e) {
         if (e.code === "ENOENT") {
           cancelPending(resolved);
           res.json({ ok: true });
+          applyToTree(req, { type: "deleted", path: rel });
         } else {
           res.status(500).json(sanitizeError(e));
         }
@@ -61410,8 +63892,9 @@ var require_fs = __commonJS({
       try {
         await fs2.promises.rmdir(resolved);
         cancelPendingSubtree(resolved);
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
+        applyToTree(req, { type: "deleted", path: rel });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61429,8 +63912,9 @@ var require_fs = __commonJS({
         if (req.query.recursive === "true") {
           cancelPendingSubtree(resolved);
         }
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
+        applyToTree(req, { type: "deleted", path: rel });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61458,8 +63942,9 @@ var require_fs = __commonJS({
           req.body.atime / 1e3,
           req.body.mtime / 1e3
         );
-        invalidateBootstrap(req);
+        const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
+        applyToTree(req, { type: "modified", path: rel });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
       }
@@ -61507,7 +63992,7 @@ var require_fs = __commonJS({
         return;
       }
       try {
-        const entry = await bootstrapRoutes2.getOrBuild(req._vaultId);
+        const entry = await bootstrapCache2.getOrBuild(req._vaultId);
         if (!entry) {
           return res.status(404).json({ error: "Vault not found" });
         }
@@ -61533,7 +64018,7 @@ var require_fs = __commonJS({
         const filename = path2.basename(resolved);
         const buffered = getPending(resolved);
         if (buffered) {
-          const body = Buffer.isBuffer(buffered.data) ? buffered.data : Buffer.from(buffered.data, buffered.encoding || "utf-8");
+          const body = pendingBuffer(buffered.data, buffered.encoding);
           res.setHeader(
             "Content-Disposition",
             encodeContentDispositionFilename(filename)
@@ -61590,9 +64075,9 @@ var require_fs = __commonJS({
   }
 });
 
-// apps/ignis-server/server/vault-lifecycle.js
-var require_vault_lifecycle = __commonJS({
-  "apps/ignis-server/server/vault-lifecycle.js"(exports2, module2) {
+// apps/ignis-server/server/vault/lifecycle.js
+var require_lifecycle = __commonJS({
+  "apps/ignis-server/server/vault/lifecycle.js"(exports2, module2) {
     var config2 = require_config();
     var { watcher: watcher2 } = require_src2();
     var wss2 = null;
@@ -61634,11 +64119,15 @@ var require_vault = __commonJS({
     var fs2 = require("fs");
     var config2 = require_config();
     var path2 = require("path");
-    var bootstrapRoutes2 = require_bootstrap();
-    var { withWatcherStopped } = require_vault_lifecycle();
+    var bootstrapCache2 = require_cache();
+    var settings2 = require_settings();
+    var treeReconcile2 = require_reconcile();
+    var { withWatcherStopped } = require_lifecycle();
     var { sanitizeError } = require_src2();
     var router = express2.Router();
     var WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+    var REFRESH_COOLDOWN_MS = 10 * 1e3;
+    var lastRefreshAt = /* @__PURE__ */ new Map();
     function isValidVaultName(name) {
       if (typeof name !== "string" || name.length === 0 || name.length > 255) {
         return false;
@@ -61666,13 +64155,28 @@ var require_vault = __commonJS({
       if (!vaultPath) {
         return res.status(404).json({ error: "Vault not found", id: vaultId });
       }
-      res.json({
-        id: vaultId,
-        name: vaultId,
-        path: vaultPath,
-        platform: process.platform,
-        version: config2.obsidianVersion
-      });
+      res.json(bootstrapCache2.buildVaultInfo(vaultId, vaultPath));
+    });
+    router.post("/refresh", async (req, res) => {
+      const vault = req.body?.vault;
+      if (!config2.getVaultPath(vault)) {
+        return res.status(404).json({ error: "Vault not found" });
+      }
+      if (Date.now() - (lastRefreshAt.get(vault) || 0) < REFRESH_COOLDOWN_MS) {
+        return res.status(429).json({ error: "Vault was refreshed a moment ago, try again shortly" });
+      }
+      lastRefreshAt.set(vault, Date.now());
+      try {
+        const result = await bootstrapCache2.reconcileVault(vault, {
+          includeIgnored: true
+        });
+        if (!result) {
+          return res.json({ ok: true, reconciled: false, drifted: false });
+        }
+        res.json({ ok: true, reconciled: true, drifted: result.drifted });
+      } catch (e) {
+        res.status(500).json(sanitizeError(e));
+      }
     });
     router.post("/create", async (req, res) => {
       const name = req.body?.name;
@@ -61686,7 +64190,7 @@ var require_vault = __commonJS({
           recursive: false
         });
         config2.refreshVaults();
-        bootstrapRoutes2.invalidateVault(name);
+        bootstrapCache2.invalidateVault(name);
         res.json({ ok: true, id: name, path: vaultPath });
       } catch (e) {
         if (e.code === "EEXIST") {
@@ -61716,8 +64220,17 @@ var require_vault = __commonJS({
           () => fs2.promises.rename(vaultPath, newPath)
         );
         config2.refreshVaults();
-        bootstrapRoutes2.invalidateVault(vaultId);
-        bootstrapRoutes2.invalidateVault(newName);
+        const trustedVaults = settings2.get("trustedVaults");
+        if (trustedVaults.includes(vaultId)) {
+          settings2.update({
+            trustedVaults: trustedVaults.map(
+              (id) => id === vaultId ? newName : id
+            )
+          });
+        }
+        treeReconcile2.cancelVault(vaultId);
+        bootstrapCache2.invalidateVault(vaultId);
+        bootstrapCache2.invalidateVault(newName);
         res.json({ ok: true, id: newName, path: newPath });
       } catch (e) {
         if (e.code === "ENOTEMPTY" || e.code === "EEXIST") {
@@ -61739,7 +64252,14 @@ var require_vault = __commonJS({
           () => fs2.promises.rm(vaultPath, { recursive: true, force: true })
         );
         config2.refreshVaults();
-        bootstrapRoutes2.invalidateVault(vaultId);
+        const trustedVaults = settings2.get("trustedVaults");
+        if (trustedVaults.includes(vaultId)) {
+          settings2.update({
+            trustedVaults: trustedVaults.filter((id) => id !== vaultId)
+          });
+        }
+        treeReconcile2.cancelVault(vaultId);
+        bootstrapCache2.invalidateVault(vaultId);
         res.json({ ok: true });
       } catch (e) {
         res.status(500).json(sanitizeError(e));
@@ -61749,24 +64269,151 @@ var require_vault = __commonJS({
   }
 });
 
-// apps/ignis-server/server/routes/proxy.js
-var require_proxy = __commonJS({
-  "apps/ignis-server/server/routes/proxy.js"(exports2, module2) {
-    var express2 = require_express2();
+// apps/ignis-server/server/obsidian-account/signin.js
+var require_signin = __commonJS({
+  "apps/ignis-server/server/obsidian-account/signin.js"(exports2, module2) {
+    var obCli2 = require_ob_cli();
+    var SIGNIN_HOST = "api.obsidian.md";
+    var SIGNIN_PATH = "/user/signin";
+    var SIGNIN_ATTEMPTS = 3;
+    var SIGNIN_RETRY_DELAY_MS = 5e3;
+    var signinRetryDelayMs = SIGNIN_RETRY_DELAY_MS;
+    var obInstalled = null;
+    function isObInstalled() {
+      if (obInstalled === null) {
+        obInstalled = obCli2.checkInstalled().installed;
+      }
+      return obInstalled;
+    }
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    function signinCredentials({ url, method, body, binary }) {
+      if (binary || (method || "").toUpperCase() !== "POST") {
+        return null;
+      }
+      if (typeof body !== "string") {
+        return null;
+      }
+      const target = new URL(url);
+      if (target.hostname !== SIGNIN_HOST || target.pathname !== SIGNIN_PATH) {
+        return null;
+      }
+      try {
+        const { email, password, mfa } = JSON.parse(body);
+        return { email, password, mfa };
+      } catch {
+        return null;
+      }
+    }
+    function classifySignin(relayed) {
+      let parsed;
+      try {
+        parsed = JSON.parse(Buffer.from(relayed.body, "base64").toString("utf8"));
+      } catch {
+        return "broken";
+      }
+      if (parsed && parsed.token) {
+        return "success";
+      }
+      if (relayed.status < 200 || relayed.status > 299) {
+        return "broken";
+      }
+      const message = parsed && typeof parsed.error === "string" ? parsed.error.toLowerCase() : "";
+      if (message.includes("2fa code")) {
+        return "mfa";
+      }
+      if (message.includes("double check your email and password")) {
+        return "login-failed";
+      }
+      if (message.includes("overloaded")) {
+        return "overloaded";
+      }
+      return "broken";
+    }
+    function signedInResponse(login, email) {
+      const account = JSON.stringify({
+        token: login.token,
+        email,
+        name: login.name,
+        license: ""
+      });
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(account).toString("base64")
+      };
+    }
+    async function retryRelay(relayAgain, relayed) {
+      let latest = relayed;
+      let outcome = "";
+      for (let attempt = 2; attempt <= SIGNIN_ATTEMPTS; attempt++) {
+        await sleep(signinRetryDelayMs);
+        latest = await relayAgain();
+        outcome = classifySignin(latest);
+        if (outcome === "success" || outcome === "mfa" || outcome === "login-failed") {
+          return latest;
+        }
+      }
+      console.warn(`[proxy] signin: relay shed, ob not installed (${outcome})`);
+      return latest;
+    }
+    async function retryWithOb(credentials, relayed, relayOverloaded) {
+      let failure = "";
+      for (let attempt = 1; attempt <= SIGNIN_ATTEMPTS; attempt++) {
+        const login = await obCli2.login(credentials);
+        if (login.outcome === "ok") {
+          return signedInResponse(login, credentials.email);
+        }
+        if (login.outcome === "bad-credentials") {
+          return relayed;
+        }
+        failure = login.outcome;
+        if (failure !== "overload" && !relayOverloaded) {
+          break;
+        }
+        if (attempt < SIGNIN_ATTEMPTS) {
+          await sleep(signinRetryDelayMs);
+        }
+      }
+      console.warn(`[proxy] signin: relay shed, ob login failed (${failure})`);
+      return relayed;
+    }
+    async function resolveSignin(credentials, relayed, relayAgain) {
+      const outcome = classifySignin(relayed);
+      if (outcome === "success" || outcome === "mfa") {
+        return relayed;
+      }
+      if (!isObInstalled()) {
+        if (outcome === "login-failed") {
+          return relayed;
+        }
+        return retryRelay(relayAgain, relayed);
+      }
+      return retryWithOb(credentials, relayed, outcome === "overloaded");
+    }
+    function _setSigninRetryDelayMs(ms) {
+      signinRetryDelayMs = ms ?? SIGNIN_RETRY_DELAY_MS;
+    }
+    function _setObCli(stub) {
+      obCli2 = stub;
+      obInstalled = null;
+    }
+    module2.exports = {
+      signinCredentials,
+      resolveSignin,
+      _setSigninRetryDelayMs,
+      _setObCli
+    };
+  }
+});
+
+// apps/ignis-server/server/routes/proxy/ssrf-guard.js
+var require_ssrf_guard = __commonJS({
+  "apps/ignis-server/server/routes/proxy/ssrf-guard.js"(exports2, module2) {
     var dns = require("dns");
     var net = require("net");
-    var http = require("http");
-    var https = require("https");
-    var zlib2 = require("zlib");
-    var path2 = require("path");
-    var fs2 = require("fs");
     var settings2 = require_settings();
-    var config2 = require_config();
-    var { sanitizeError } = require_src2();
-    var router = express2.Router();
-    var MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
-    var MAX_REDIRECTS = 5;
-    var REDIRECT_CODES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
     function isPrivateIp(ip) {
       const type = net.isIP(ip);
       if (type === 4) {
@@ -61926,6 +64573,35 @@ var require_proxy = __commonJS({
         }
       }
     }
+    module2.exports = {
+      addressAllowed,
+      httpError,
+      privateHostError,
+      safeLookup,
+      assertPublicUrl,
+      isPrivateIp,
+      buildAllowList,
+      allowsAddress
+    };
+  }
+});
+
+// apps/ignis-server/server/routes/proxy/relay.js
+var require_relay = __commonJS({
+  "apps/ignis-server/server/routes/proxy/relay.js"(exports2, module2) {
+    var net = require("net");
+    var http = require("http");
+    var https = require("https");
+    var zlib2 = require("zlib");
+    var {
+      addressAllowed,
+      httpError,
+      privateHostError,
+      safeLookup
+    } = require_ssrf_guard();
+    var MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
+    var MAX_REDIRECTS = 5;
+    var REDIRECT_CODES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
     function sameOrigin(a, b) {
       return a.protocol === b.protocol && a.host === b.host;
     }
@@ -62050,6 +64726,57 @@ var require_proxy = __commonJS({
         res.on("error", (e) => fail(httpError(502, e.message)));
       });
     }
+    async function relayOnce({ url, method, headers, body }) {
+      const upstream = await proxyRequest({ url, method, headers, body });
+      const declaredLength = Number(upstream.headers["content-length"]);
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+        upstream.destroy();
+        return { tooLarge: true };
+      }
+      const respBody = await readBody(upstream, MAX_RESPONSE_BYTES);
+      const skipHeaders = /* @__PURE__ */ new Set([
+        "content-encoding",
+        "transfer-encoding",
+        "content-length",
+        "connection"
+      ]);
+      const respHeaders = {};
+      for (const [key, val] of Object.entries(upstream.headers)) {
+        if (!skipHeaders.has(key.toLowerCase())) {
+          respHeaders[key] = val;
+        }
+      }
+      return {
+        status: upstream.statusCode,
+        headers: respHeaders,
+        body: respBody.toString("base64")
+      };
+    }
+    module2.exports = {
+      relayOnce,
+      proxyRequest,
+      requestOnce,
+      stripRequestFramingHeaders
+    };
+  }
+});
+
+// apps/ignis-server/server/routes/proxy/index.js
+var require_proxy = __commonJS({
+  "apps/ignis-server/server/routes/proxy/index.js"(exports2, module2) {
+    var express2 = require_express2();
+    var path2 = require("path");
+    var fs2 = require("fs");
+    var settings2 = require_settings();
+    var config2 = require_config();
+    var { sanitizeError } = require_src2();
+    var {
+      signinCredentials,
+      resolveSignin
+    } = require_signin();
+    var { assertPublicUrl } = require_ssrf_guard();
+    var { relayOnce } = require_relay();
+    var router = express2.Router();
     router.post("/", async (req, res) => {
       const { url, method, headers, body, binary } = req.body;
       if (!url) {
@@ -62096,35 +64823,25 @@ var require_proxy = __commonJS({
       }
       try {
         const reqBody = binary && typeof body === "string" ? Buffer.from(body, "base64") : body;
-        const upstream = await proxyRequest({
+        const relayArgs = {
           url,
           method: method || "GET",
           headers: headers || {},
           body: reqBody
-        });
-        const declaredLength = Number(upstream.headers["content-length"]);
-        if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
-          upstream.destroy();
+        };
+        const credentials = signinCredentials(req.body);
+        let relayed = await relayOnce(relayArgs);
+        if (credentials) {
+          relayed = await resolveSignin(
+            credentials,
+            relayed,
+            () => relayOnce(relayArgs)
+          );
+        }
+        if (relayed.tooLarge) {
           return res.status(413).json({ error: "Upstream response too large" });
         }
-        const respBody = await readBody(upstream, MAX_RESPONSE_BYTES);
-        const skipHeaders = /* @__PURE__ */ new Set([
-          "content-encoding",
-          "transfer-encoding",
-          "content-length",
-          "connection"
-        ]);
-        const respHeaders = {};
-        for (const [key, val] of Object.entries(upstream.headers)) {
-          if (!skipHeaders.has(key.toLowerCase())) {
-            respHeaders[key] = val;
-          }
-        }
-        res.json({
-          status: upstream.statusCode,
-          headers: respHeaders,
-          body: respBody.toString("base64")
-        });
+        res.json(relayed);
       } catch (e) {
         if (e.block) {
           const body2 = { error: e.message, ...e.block };
@@ -62134,12 +64851,6 @@ var require_proxy = __commonJS({
       }
     });
     module2.exports = router;
-    module2.exports.isPrivateIp = isPrivateIp;
-    module2.exports.proxyRequest = proxyRequest;
-    module2.exports.requestOnce = requestOnce;
-    module2.exports.stripRequestFramingHeaders = stripRequestFramingHeaders;
-    module2.exports.buildAllowList = buildAllowList;
-    module2.exports.allowsAddress = allowsAddress;
   }
 });
 
@@ -62165,9 +64876,10 @@ var require_version2 = __commonJS({
 var require_settings2 = __commonJS({
   "apps/ignis-server/server/routes/settings.js"(exports2, module2) {
     var express2 = require_express2();
-    var { writeCoalescer: writeCoalescer2 } = require_src2();
+    var { writeCoalescer: writeCoalescer2, watcher: watcher2 } = require_src2();
+    var config2 = require_config();
     var settings2 = require_settings();
-    var bootstrapRoutes2 = require_bootstrap();
+    var bootstrapCache2 = require_cache();
     var router = express2.Router();
     var NUMBER_KEYS = [
       "contentCacheBytes",
@@ -62176,7 +64888,23 @@ var require_settings2 = __commonJS({
       "writeCoalesceMs",
       "maxBodyBytes"
     ];
-    var LIST_KEYS = ["proxyAllowlist", "directFetchHosts"];
+    var LIST_KEYS = ["proxyAllowlist", "directFetchHosts", "trustedVaults"];
+    var MAX_RULE_SETS = 64;
+    var MAX_PATTERNS_PER_SET = 200;
+    var MAX_PATTERN_LENGTH = 256;
+    var MAX_DOUBLE_STARS = 3;
+    function invalidPatternReason(pattern) {
+      if (pattern.length > MAX_PATTERN_LENGTH) {
+        return `a pattern is longer than ${MAX_PATTERN_LENGTH} characters`;
+      }
+      if (pattern.split("**").length - 1 > MAX_DOUBLE_STARS) {
+        return `a pattern uses ** more than ${MAX_DOUBLE_STARS} times`;
+      }
+      if (!watcher2.canCompileIgnorePattern(pattern)) {
+        return "a pattern is not a valid gitignore pattern";
+      }
+      return null;
+    }
     function validate(body) {
       const clean = {};
       if (body.proxyMode !== void 0) {
@@ -62217,24 +64945,84 @@ var require_settings2 = __commonJS({
         }
         clean[key] = list.map((v) => v.trim());
       }
+      if (clean.trustedVaults !== void 0) {
+        for (const id of clean.trustedVaults) {
+          if (!config2.getVaultPath(id)) {
+            throw new Error(`trustedVaults contains an unknown vault: ${id}`);
+          }
+        }
+        clean.trustedVaults = [...new Set(clean.trustedVaults)];
+      }
+      if (body.ignoreRules !== void 0) {
+        if (!Array.isArray(body.ignoreRules)) {
+          throw new Error("ignoreRules must be an array of rule sets");
+        }
+        if (body.ignoreRules.length > MAX_RULE_SETS) {
+          throw new Error(`ignoreRules holds more than ${MAX_RULE_SETS} rule sets`);
+        }
+        clean.ignoreRules = body.ignoreRules.map((rule) => {
+          if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+            throw new Error("each ignoreRules entry must be an object");
+          }
+          const patterns = rule.patterns;
+          if (!Array.isArray(patterns) || patterns.length < 1 || patterns.some((p) => typeof p !== "string" || !p.trim())) {
+            throw new Error(
+              "each ignoreRules entry needs a patterns array of non-empty strings"
+            );
+          }
+          if (patterns.length > MAX_PATTERNS_PER_SET) {
+            throw new Error(
+              `a rule set holds more than ${MAX_PATTERNS_PER_SET} patterns`
+            );
+          }
+          const trimmed = patterns.map((p) => p.trim());
+          for (const pattern of trimmed) {
+            const reason = invalidPatternReason(pattern);
+            if (reason) {
+              throw new Error(reason);
+            }
+          }
+          return {
+            name: rule.name === void 0 ? "" : String(rule.name),
+            patterns: trimmed
+          };
+        });
+      }
       return clean;
     }
-    function applySettings(effective) {
+    function sameList(a, b) {
+      return a.length === b.length && a.every((value, i) => value === b[i]);
+    }
+    function ruleLines(rules) {
+      return Array.isArray(rules) ? rules.flatMap((r) => Array.isArray(r.patterns) ? r.patterns : []) : [];
+    }
+    async function applySettings(effective, previous) {
       writeCoalescer2.configure({ writeCoalesceMs: effective.writeCoalesceMs });
+      if (sameList(ruleLines(effective.ignoreRules), ruleLines(previous.ignoreRules))) {
+        return;
+      }
+      watcher2.configure({ ignoredPaths: settings2.resolveIgnoreLines() });
+      await watcher2.stopAll();
     }
     router.get("/", (req, res) => {
-      res.json(settings2.getAll());
+      res.json({
+        ...settings2.getAll(),
+        ignoreSuggestions: bootstrapCache2.ignoreSuggestions()
+      });
     });
-    router.post("/", (req, res) => {
+    router.post("/", async (req, res) => {
       let clean;
       try {
         clean = validate(req.body || {});
       } catch (e) {
         return res.status(400).json({ error: e.message });
       }
+      const previous = settings2.getAll();
       const effective = settings2.update(clean);
-      applySettings(effective);
-      bootstrapRoutes2.invalidateAll();
+      await applySettings(effective, previous);
+      if (Object.keys(clean).length > 0) {
+        bootstrapCache2.invalidateAll();
+      }
       res.json(effective);
     });
     module2.exports = router;
@@ -62242,15 +65030,298 @@ var require_settings2 = __commonJS({
   }
 });
 
+// apps/ignis-server/server/routes/bootstrap.js
+var require_bootstrap = __commonJS({
+  "apps/ignis-server/server/routes/bootstrap.js"(exports2, module2) {
+    var express2 = require_express2();
+    var config2 = require_config();
+    var { sanitizeError } = require_src2();
+    var { getOrBuild, getOrCompress } = require_cache();
+    var router = express2.Router();
+    router.get("/", async (req, res) => {
+      const vaultId = req.query.vault || config2.defaultVaultId;
+      if (!vaultId || !config2.getVaultPath(vaultId)) {
+        return res.status(404).json({ error: "Vault not found", id: vaultId });
+      }
+      try {
+        const entry = await getOrBuild(vaultId);
+        if (!entry) {
+          return res.status(404).json({ error: "Vault not found" });
+        }
+        res.setHeader("Cache-Control", "no-store");
+        if (req._demoSessionId) {
+          return res.json(JSON.parse(JSON.stringify(entry.response)));
+        }
+        const ae = req.headers["accept-encoding"] || "";
+        const compressed = await getOrCompress(entry);
+        let buf, encoding;
+        if (ae.includes("br") && compressed.br) {
+          buf = compressed.br;
+          encoding = "br";
+        } else if ((ae.includes("gzip") || ae.includes("deflate")) && compressed.gz) {
+          buf = compressed.gz;
+          encoding = "gzip";
+        }
+        if (buf) {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.setHeader("Content-Encoding", encoding);
+          res.setHeader("Content-Length", buf.length);
+          return res.status(200).end(buf);
+        }
+        res.json(entry.response);
+      } catch (e) {
+        console.error("[bootstrap] error:", e);
+        res.status(500).json(sanitizeError(e));
+      }
+    });
+    module2.exports = router;
+  }
+});
+
+// apps/ignis-server/server/cache/metadata-channel.js
+var require_metadata_channel = __commonJS({
+  "apps/ignis-server/server/cache/metadata-channel.js"(exports2, module2) {
+    var CHANNEL = "metadata";
+    var REVISION_DEBOUNCE_MS = 250;
+    var REVISION_MAX_WAIT_MS = 2e3;
+    function createMetadataChannel2(wss2) {
+      const channel = wss2.channel(CHANNEL);
+      const state = /* @__PURE__ */ new Map();
+      function stateOf(vaultId) {
+        let announceState = state.get(vaultId);
+        if (!announceState) {
+          announceState = { etag: null, timer: null, debounceStart: 0 };
+          state.set(vaultId, announceState);
+        }
+        return announceState;
+      }
+      function announce(vaultId, announceState) {
+        clearTimeout(announceState.timer);
+        announceState.timer = null;
+        announceState.debounceStart = 0;
+        channel.broadcastToVault(vaultId, {
+          type: "revision",
+          etag: announceState.etag
+        });
+      }
+      function reportRevision(vaultId, etag) {
+        if (!etag) {
+          return;
+        }
+        const announceState = state.get(vaultId);
+        if (!announceState || announceState.etag === etag) {
+          return;
+        }
+        announceState.etag = etag;
+        if (announceState.timer && Date.now() - announceState.debounceStart >= REVISION_MAX_WAIT_MS) {
+          announce(vaultId, announceState);
+          return;
+        }
+        if (!announceState.timer) {
+          announceState.debounceStart = Date.now();
+        }
+        clearTimeout(announceState.timer);
+        announceState.timer = setTimeout(
+          () => announce(vaultId, announceState),
+          REVISION_DEBOUNCE_MS
+        );
+        announceState.timer.unref?.();
+      }
+      function reportReplacement(vaultId, etag) {
+        const announceState = stateOf(vaultId);
+        clearTimeout(announceState.timer);
+        announceState.timer = null;
+        announceState.debounceStart = 0;
+        announceState.etag = etag;
+        channel.broadcastToVault(vaultId, { type: "replaced", etag });
+      }
+      function forgetVault(vaultId) {
+        const announceState = state.get(vaultId);
+        if (!announceState) {
+          return;
+        }
+        clearTimeout(announceState.timer);
+        state.delete(vaultId);
+      }
+      return { reportRevision, reportReplacement, forgetVault };
+    }
+    module2.exports = { createMetadataChannel: createMetadataChannel2 };
+  }
+});
+
+// apps/ignis-server/server/cache/listeners.js
+var require_listeners = __commonJS({
+  "apps/ignis-server/server/cache/listeners.js"(exports2, module2) {
+    var config2 = require_config();
+    function registerCacheListeners2({
+      bootstrapCache: bootstrapCache2,
+      metadataChannel: metadataChannel2,
+      watcher: watcher2,
+      writeCoalescer: writeCoalescer2
+    }) {
+      bootstrapCache2.onEntrySwapped(
+        (vaultId, revision) => metadataChannel2.reportReplacement(vaultId, revision)
+      );
+      bootstrapCache2.onVaultInvalidated(
+        (vaultId) => metadataChannel2.forgetVault(vaultId)
+      );
+      watcher2.addGlobalListener((vaultId, event) => {
+        bootstrapCache2.applyMutation(vaultId, event).then(
+          (revision) => {
+            try {
+              metadataChannel2.reportRevision(vaultId, revision);
+            } catch (e) {
+              console.warn(
+                `[metadata] revision announce failed on vault ${vaultId}:`,
+                e.message
+              );
+            }
+          },
+          (e) => console.warn(
+            `[bootstrap] event apply failed on vault ${vaultId} for ${event.path}:`,
+            e.message
+          )
+        );
+      });
+      writeCoalescer2.onFlushSuccess((absPath) => {
+        const match = config2.vaultForPath(absPath);
+        if (!match) {
+          return;
+        }
+        bootstrapCache2.applyMutation(match.vaultId, { type: "modified", path: match.relPath }).catch(
+          (e) => console.warn(
+            `[bootstrap] flush apply failed on vault ${match.vaultId} for ${match.relPath}:`,
+            e.message
+          )
+        );
+      });
+    }
+    module2.exports = { registerCacheListeners: registerCacheListeners2 };
+  }
+});
+
+// apps/ignis-server/server/lan-share.js
+var require_lan_share = __commonJS({
+  "apps/ignis-server/server/lan-share.js"(exports2, module2) {
+    var url = require("url");
+    var digestAuth = require_digest_auth();
+    var state = {
+      server: null,
+      // http.Server | null
+      port: 0,
+      since: 0
+    };
+    function status() {
+      return {
+        running: !!state.server,
+        port: state.port,
+        since: state.since,
+        user: digestAuth.getCredentials()?.user || ""
+      };
+    }
+    function pickPort() {
+      return 3e4 + Math.floor(Math.random() * 3e4);
+    }
+    function listenOn(app2, port, wss2) {
+      return new Promise((resolve, reject) => {
+        const tryPort = (p, attemptsLeft) => {
+          const srv = app2.listen(p, "0.0.0.0");
+          srv.once("listening", () => resolve(srv));
+          srv.once("error", (err) => {
+            if (err.code === "EADDRINUSE" && attemptsLeft > 0) {
+              tryPort(pickPort(), attemptsLeft - 1);
+            } else {
+              reject(err);
+            }
+          });
+        };
+        tryPort(port, 5);
+      });
+    }
+    async function enable(app2, wss2, user, pass, portHint) {
+      if (state.server && digestAuth.getCredentials()?.user === user && digestAuth.getCredentials()?.pass === pass) {
+        return status();
+      }
+      if (state.server) {
+        await disable();
+      }
+      digestAuth.setCredentials(user, pass);
+      const wantPort = Number(portHint) > 0 ? Number(portHint) : pickPort();
+      const srv = await listenOn(app2, wantPort, wss2);
+      srv.on("upgrade", (req, socket, head) => {
+        const pathname = url.parse(req.url).pathname;
+        if (pathname !== "/ws") {
+          socket.destroy();
+          return;
+        }
+        wss2.handleUpgrade(req, socket, head, (ws) => {
+          wss2.emit("connection", ws, req);
+        });
+      });
+      state.server = srv;
+      state.port = srv.address().port;
+      state.since = Date.now();
+      console.log(`[lan-share] serverB listening on 0.0.0.0:${state.port} (digest auth on)`);
+      return status();
+    }
+    function disable() {
+      return new Promise((resolve) => {
+        if (!state.server) {
+          return resolve(status());
+        }
+        const srv = state.server;
+        state.server = null;
+        state.port = 0;
+        state.since = 0;
+        digestAuth.setCredentials(null, null);
+        if (typeof srv.closeAllConnections === "function") {
+          srv.closeAllConnections();
+        }
+        srv.close(() => resolve(status()));
+        setTimeout(() => resolve(status()), 2e3);
+      });
+    }
+    function loopbackOnly(req, res, next) {
+      const ip = req.ip || "";
+      if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") {
+        return next();
+      }
+      return res.status(403).send("403 loopback only");
+    }
+    function setupLanShare(app2, wss2) {
+      app2.get("/api/admin/lan-share", loopbackOnly, (req, res) => {
+        res.json(status());
+      });
+      app2.post("/api/admin/lan-share", loopbackOnly, (req, res) => {
+        const body = req.body || {};
+        const action = body.action;
+        if (action === "enable") {
+          const { user, pass, port } = body;
+          if (!user || !pass || String(pass).length < 4) {
+            return res.status(400).json({ error: "user and pass (>=4 chars) required" });
+          }
+          enable(app2, wss2, String(user), String(pass), Number(port) || 0).then((st) => res.json(st)).catch((e) => res.status(500).json({ error: String(e && e.message || e) }));
+          return;
+        }
+        if (action === "disable") {
+          disable().then((st) => res.json(st));
+          return;
+        }
+        res.status(400).json({ error: "bad action" });
+      });
+    }
+    module2.exports = { setupLanShare };
+  }
+});
+
 // apps/ignis-server/server/index.js
 var express = require_express2();
-var fs = require("fs");
 var path = require("path");
 var compression = require_compression();
 var config = require_config();
 var settings = require_settings();
-var { getVersion } = require_version();
-var { versionedSrc, cacheControlFor } = require_cache_headers();
+var { cacheControlFor } = require_cache_headers();
+var { buildIndexHtml } = require_index_html();
 var {
   setupWebSocket,
   watcher,
@@ -62260,16 +65331,25 @@ var {
 var {
   BRIDGE_PLUGIN_ID,
   migratePluginsFromAllVaults
-} = require_bridge_plugin();
+} = require_migrate_bridge();
 var {
   initPlugins,
   shutdownPlugins,
-  getBundledPluginDirs
+  getBundledPluginDirs,
+  getPluginDataDir
 } = require_manager();
+var obCli = require_ob_cli();
 var pluginRoutes = require_plugins();
-writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
-var { flushAll } = writeCoalescer;
 var { setupDemo, wireDemoWebSocket } = require_demo();
+var { flushAll } = writeCoalescer;
+writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
+watcher.configure({ ignoredPaths: settings.resolveIgnoreLines() });
+obCli.init({
+  obHome: path.join(
+    getPluginDataDir(config.dataRoot, "headless-sync"),
+    "ob-home"
+  )
+});
 var REPO_ROOT = path.join(__dirname, "..", "..", "..");
 var ANSI_RED = "\x1B[31m";
 var ANSI_YELLOW = "\x1B[33m";
@@ -62307,7 +65387,11 @@ var proxyRoutes = require_proxy();
 var versionRoutes = require_version2();
 var settingsRoutes = require_settings2();
 var bootstrapRoutes = require_bootstrap();
-var vaultLifecycle = require_vault_lifecycle();
+var bootstrapCache = require_cache();
+var treeReconcile = require_reconcile();
+var { createMetadataChannel } = require_metadata_channel();
+var { registerCacheListeners } = require_listeners();
+var vaultLifecycle = require_lifecycle();
 app.use("/assets", express.static(path.join(__dirname, "assets")));
 setupDemo(app);
 app.use("/api/fs", fsRoutes);
@@ -62317,6 +65401,7 @@ app.use("/api/version", versionRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/plugins", pluginRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
+var fs = require("fs");
 app.get("/__vitreus", (req, res) => {
   res.json({ bundle: "v8-asarfull", nodeAsar: true, i18nFallback: true });
 });
@@ -62420,7 +65505,7 @@ app.use("/vault-files", (req, res, next) => {
   }
   const buffered = resolved ? writeCoalescer.getPending(resolved) : null;
   if (buffered) {
-    const body = Buffer.isBuffer(buffered.data) ? buffered.data : Buffer.from(buffered.data, buffered.encoding || "utf-8");
+    const body = writeCoalescer.pendingBuffer(buffered.data, buffered.encoding);
     const ext = path.extname(resolved);
     if (ext) {
       res.type(ext);
@@ -62430,43 +65515,6 @@ app.use("/vault-files", (req, res, next) => {
   req.url = "/" + parts.slice(1).join("/");
   express.static(vaultPath)(req, res, next);
 });
-var cachedHtml = null;
-function buildIndexHtml() {
-  if (cachedHtml) {
-    return cachedHtml;
-  }
-  const version = getVersion();
-  const obsidianHtmlPath = path.join(config.obsidianAssetsPath, "index.html");
-  const obsidianHtml = fs.readFileSync(obsidianHtmlPath, "utf-8");
-  const scriptRegex = /<script[^>]+src="([^"]+)"[^>]*>/g;
-  const scripts = [];
-  let match;
-  while ((match = scriptRegex.exec(obsidianHtml)) !== null) {
-    scripts.push(match[1]);
-  }
-  const ov = config.obsidianVersion;
-  const obsidianVersion = ov && ov !== "0.0.0" ? ov : null;
-  const templatePath = path.join(__dirname, "assets", "index.html");
-  let html = fs.readFileSync(templatePath, "utf-8");
-  html = html.replace("__IGNIS_UI_SRC__", `ignis-ui.js?v=${version}`);
-  html = html.replace("__SHIM_LOADER_SRC__", `shim-loader.js?v=${version}`);
-  html = html.replace(
-    "__APP_CSS_SRC__",
-    versionedSrc("app.css", obsidianVersion)
-  );
-  html = html.replace(
-    "__OBSIDIAN_SCRIPTS__",
-    JSON.stringify(scripts.map((s) => versionedSrc(s, obsidianVersion)))
-  );
-  if (config.demoMode) {
-    html = html.replace(
-      '<body class="theme-dark">',
-      '<body class="theme-dark" data-demo-mode="true">'
-    );
-  }
-  cachedHtml = html;
-  return cachedHtml;
-}
 app.get(["/", "/index.html"], (req, res) => {
   res.set("Content-Type", "text/html; charset=utf-8");
   res.set("Cache-Control", "no-cache");
@@ -62498,34 +65546,42 @@ var server = app.listen(config.port, config.host, async () => {
     BRIDGE_PLUGIN_ID,
     ...bundledPluginDirs.map((d) => d.bundledPluginId)
   ]);
-  bootstrapRoutes.warmUp().catch((e) => console.warn("[bootstrap] warm-up error:", e.message));
+  bootstrapCache.warmUp().catch((e) => console.warn("[bootstrap] warm-up error:", e.message));
 });
 var wss = setupWebSocket(server, {
   getVaultPath: config.getVaultPath,
   originAllowlist: settings.get("wsOrigins")
 });
 vaultLifecycle.setWss(wss);
+require_lan_share().setupLanShare(app, wss);
 wireDemoWebSocket(server);
-watcher.addGlobalListener(
-  (vaultId) => bootstrapRoutes.invalidateVault(vaultId)
+var metadataChannel = createMetadataChannel(wss);
+registerCacheListeners({
+  bootstrapCache,
+  metadataChannel,
+  watcher,
+  writeCoalescer
+});
+watcher.onWatcherStart((vaultId) => {
+  bootstrapCache.markForRevalidation(vaultId);
+  treeReconcile.startSchedule(vaultId);
+});
+bootstrapCache.onStaleEntryServed(
+  (vaultId) => treeReconcile.scheduleReconcile(vaultId)
 );
-function vaultForPath(absPath) {
-  const target = path.resolve(absPath);
-  for (const [vaultId, vaultPath] of Object.entries(config.vaults)) {
-    const base = path.resolve(vaultPath);
-    if (target === base || target.startsWith(base + path.sep)) {
-      return { vaultId, base };
-    }
-  }
-  return null;
-}
+watcher.onWatcherRebuild((vaultId) => {
+  bootstrapCache.invalidateVault(vaultId);
+  wss.closeVaultSockets(vaultId);
+});
 writeCoalescer.onFlushGiveUp((absPath) => {
-  const match = vaultForPath(absPath);
+  const match = config.vaultForPath(absPath);
   if (!match) {
     return;
   }
-  const rel = path.relative(match.base, absPath).split(path.sep).join("/");
-  wss.broadcastToVault(match.vaultId, { type: "write-giveup", path: rel });
+  wss.broadcastToVault(match.vaultId, {
+    type: "write-giveup",
+    path: match.relPath
+  });
 });
 async function gracefulShutdown(signal) {
   console.log(`
