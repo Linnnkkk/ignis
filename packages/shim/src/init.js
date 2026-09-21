@@ -14,6 +14,7 @@ import { setSilentByDefault } from "./fs/write-durability.js";
 import { setDirectFetchHosts } from "./util/url.js";
 import { autoTrustDemoVaults, maybeProvisionDemoVault } from "./demo.js";
 import { initNativeMenuGuard } from "./native-menu-guard.js";
+import { initSettingsPopoutGuard } from "./settings-popout-guard.js";
 import { initSpellcheckGuard } from "./spellcheck-guard.js";
 
 let bootstrapVirtualPlugins = [];
@@ -45,10 +46,33 @@ export function getBootstrapVirtualPlugins() {
   return bootstrapVirtualPlugins;
 }
 
-function resolveVaultId() {
+function fetchVaultInfo(vaultId) {
+  try {
+    const vaultParam = vaultId ? "?vault=" + encodeURIComponent(vaultId) : "";
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("GET", "/api/vault/info" + vaultParam, false);
+    xhr.send();
+
+    if (xhr.status === 200) {
+      return JSON.parse(xhr.responseText);
+    }
+  } catch (e) {
+    console.error("[ignis] Failed to fetch vault config:", e);
+  }
+
+  return null;
+}
+
+export function resolveVaultId() {
   const urlParams = new URLSearchParams(window.location.search);
   window.__currentVaultId =
     urlParams.get("vault") || localStorage.getItem("last-vault") || "";
+
+  if (!window.__currentVaultId) {
+    const info = fetchVaultInfo("");
+    window.__currentVaultId = info ? info.id : "";
+  }
 
   const workspace = urlParams.get("workspace") || "";
   window.__workspaceName = isValidWorkspaceName(workspace) ? workspace : "";
@@ -91,6 +115,10 @@ function applyVaultInfo(info) {
     path: "/",
   };
 
+  if (info.trustPlugins) {
+    vaultService.setVaultTrust(info.id);
+  }
+
   console.log("[ignis] Vault:", window.__vaultConfig);
   console.log("[ignis] Obsidian version:", window.__obsidianVersion);
 }
@@ -108,23 +136,12 @@ function applyTree(tree) {
 }
 
 function initVaultConfigFallback() {
-  try {
-    const vaultParam = window.__currentVaultId
-      ? "?vault=" + encodeURIComponent(window.__currentVaultId)
-      : "";
+  const info = fetchVaultInfo(window.__currentVaultId);
 
-    const xhr = new XMLHttpRequest();
-
-    xhr.open("GET", "/api/vault/info" + vaultParam, false);
-    xhr.send();
-
-    if (xhr.status === 200) {
-      applyVaultInfo(JSON.parse(xhr.responseText));
-    } else {
-      console.warn("[ignis] No vault found, will show manager");
-    }
-  } catch (e) {
-    console.error("[ignis] Failed to fetch vault config:", e);
+  if (info) {
+    applyVaultInfo(info);
+  } else {
+    console.warn("[ignis] No vault found, will show manager");
   }
 }
 
@@ -245,6 +262,7 @@ function resolveWorkspaceAndAppearance() {
   resolveWorkspaceName();
   loadPresetIfRequested();
   initNativeMenuGuard();
+  initSettingsPopoutGuard();
   initSpellcheckGuard();
 }
 
@@ -260,11 +278,6 @@ export function initialize() {
 
   if (bootstrap) {
     applyVaultInfo(bootstrap.vault);
-
-    if (bootstrap.vault.trustPlugins) {
-      vaultService.setVaultTrust(bootstrap.vault.id);
-    }
-
     window.__vaultList = bootstrap.vaultList;
     autoTrustDemoVaults(bootstrap.vaultList);
     applyTree(bootstrap.tree);
