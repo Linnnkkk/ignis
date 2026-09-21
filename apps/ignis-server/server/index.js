@@ -114,6 +114,10 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/plugins", pluginRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 
+// ★ Vitreus: 上游 0.8.11 移除了顶层 fs require（buildIndexHtml 搬走后不再需要），
+//   但下方 asar 解包器与 i18n 兜底路由依赖 fs，在此补回。
+const fs = require("fs");
+
 // ★ Vitreus 构建标记：排障用（前端探针读它确认沙箱里跑的是哪个 bundle——
 //   曾经"修复推了但手机跑旧 server"排查一整天，加这个一眼分辨）
 app.get("/__vitreus", (req, res) => {
