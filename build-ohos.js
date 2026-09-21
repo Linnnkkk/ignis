@@ -49,6 +49,14 @@ fs.cpSync(
   path.join(SERVER_DIR, "assets"),
   { recursive: true },
 );
+// 0.8.11: 上游 buildIndexHtml 移入 server/static/，模板路径用 __dirname/../assets
+// （源码树=server/assets）。esbuild 内联后 __dirname=server/，解析成
+// apps/ignis-server/assets ——补一份镜像让两种布局都成立（~40KB）
+fs.cpSync(
+  path.join(ROOT, "apps/ignis-server/server/assets"),
+  path.join(OUT, "apps", "ignis-server", "assets"),
+  { recursive: true },
+);
 fs.cpSync(
   path.join(ROOT, "apps/ignis-server/server/plugins"),
   path.join(SERVER_DIR, "plugins"),
