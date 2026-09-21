@@ -34625,7 +34625,7 @@ var require_config = __commonJS({
       headlessSyncIdleRestartMs: parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
       devSuppressWriteFailures: process.env.DEV_SUPPRESS_WRITE_FAILURES === "true",
       devForceReadingView: process.env.DEV_FORCE_READING_VIEW === "true",
-      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.12.7_unpacked"),
+      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.13.7_unpacked"),
       get obsidianVersion() {
         const assetsPath = this.obsidianAssetsPath;
         try {
