@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Support for Obsidian 1.13.7 (Electron 39 / Node 22 / Chrome 142): shim the
+  sync IPC channels 1.13.x requires at startup (license terms, permission
+  policy, unload guards, adblock settings, sandbox-vault/CLI/insider/language
+  channels), map the settings window frame zoom onto the browser zoom, and
+  stub the new desktop-only window APIs (`setMinimumSize`,
+  `setFrameZoomLevel`, `showDefinitionForSelection`).
+- Settings popout guard: force the 1.13.x settings panel to open as a modal
+  inside the managed webview instead of a detached popout window, while
+  preserving the on-disk `settingsPopoutWindow` value.
+
+### Changed
+
+- `OBSIDIAN_VERSION` and the default assets path now default to 1.13.7
+  (Dockerfile, compose templates, entrypoint, headless-sync manifest).
+- The `process` shim reports the Electron 39.8.3 / Node 22.20 / Chrome 142
+  version strings Obsidian 1.13.x expects.
+- The `terms` / `policy` sync IPC payloads are version-probed: 1.13.x gets
+  the exact license string / object the desktop build returns, 1.12.x keeps
+  the payload shapes 1.12.7 was verified against.
+
+### Fixed
+
+- Settings modal: the patched `openTab` handler is now fully restored when
+  settings close, instead of leaking the patched function.
+
 ## [0.8.12] - Karm (2026-09-21)
 
 ### Fixed
