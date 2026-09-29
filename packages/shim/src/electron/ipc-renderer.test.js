@@ -26,11 +26,14 @@ describe("Obsidian 1.13.x startup channels", () => {
     expect(ipcRenderer.sendSync("terms")).toBe(TERMS_STRING);
   });
 
-  it("policy returns an empty object that Obsidian freezes for permission lookups", () => {
-    // Obsidian calls Object.freeze() on the return value itself.
+  it("policy allows every capability so community plugins can load", () => {
+    // Obsidian calls Object.freeze() on the return value itself and then gates
+    // PluginManager.enablePlugin on policy.plugins; an empty object blocks all
+    // community plugins.
     const policy = ipcRenderer.sendSync("policy");
     expect(typeof policy).toBe("object");
-    expect(policy).toEqual({});
+    expect(policy.plugins).toBe(true);
+    expect(policy.themes).toBe(true);
     expect(() => Object.freeze(policy)).not.toThrow();
   });
 

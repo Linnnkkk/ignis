@@ -3,7 +3,7 @@
   "version": "0.8.14",
   "vitreusFork": {
     "name": "mod",
-    "revision": 2
+    "revision": 1
   },
   "private": true,
   "description": "Monorepo for Ignis: a browser-based Obsidian client. Self-hosted server in apps/ignis-server; shim, UI, and shared libraries in packages/.",

@@ -10,6 +10,8 @@ const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
+const { forkVersion, fork } = require("./scripts/vitreus-fork-version");
+
 const ROOT = __dirname;
 const OUT = path.join(ROOT, "ohos-out");
 const SERVER_DIR = path.join(OUT, "apps", "ignis-server", "server");
@@ -32,10 +34,20 @@ execSync(
 const SEMVER = JSON.parse(
   fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"),
 ).version;
+// 版本口径：semver 保留上游基线，version 走 vitreus 分支口径
+// （<upstream>-mod），避免自编译产物被误认成上游版本
+const FORK_VERSION = forkVersion();
 fs.writeFileSync(
   path.join(SERVER_DIR, "build-info.json"),
   JSON.stringify(
-    { semver: SEMVER, build: "vitreus", version: SEMVER + "+vitreus" },
+    {
+      semver: SEMVER,
+      build: fork.name + "." + fork.revision,
+      version: FORK_VERSION,
+      upstream: SEMVER,
+      fork: fork.name,
+      forkRevision: fork.revision,
+    },
     null,
     2,
   ) + "\n",
@@ -80,16 +92,16 @@ fs.cpSync(
   path.join(OUT, "packages/shim/dist"),
   { recursive: true },
 );
-// shim dist 同样是上游 CI 才重编的旧产物：window.__ignis.version 烤死在构建时。
-// 页面关于栏显示的就是它——打包时自动对齐到根 package.json 版本，一劳永逸。
+// shim dist 的 window.__ignis.version 是构建期烤死的字符串，关于栏显示的就是它，
+// 打包时统一对齐到 vitreus 分支口径。
 {
   const shimOut = path.join(OUT, "packages/shim/dist/shim-loader.js");
   let s = fs.readFileSync(shimOut, "utf-8");
   const m = s.match(/window\.__ignis = \{ version: "([^"]+)", build: "[^"]+" \}/);
-  if (m && m[1] !== SEMVER) {
-    s = s.split('version: "' + m[1] + '"').join('version: "' + SEMVER + '"');
+  if (m && m[1] !== FORK_VERSION) {
+    s = s.split('version: "' + m[1] + '"').join('version: "' + FORK_VERSION + '"');
     fs.writeFileSync(shimOut, s);
-    console.log("shim 版本串已对齐: " + m[1] + " -> " + SEMVER);
+    console.log("shim 版本串已对齐: " + m[1] + " -> " + FORK_VERSION);
   }
 }
 fs.mkdirSync(path.join(OUT, "images"), { recursive: true });
