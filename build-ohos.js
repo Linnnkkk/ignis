@@ -72,7 +72,13 @@ fs.cpSync(
 fs.cpSync(
   path.join(ROOT, "apps/ignis-server/server/plugins"),
   path.join(SERVER_DIR, "plugins"),
-  { recursive: true },
+  {
+    recursive: true,
+    // 测试文件不随设备包走：设备侧没有测试运行器，纯占体积；同时仓库内
+    // vitest 会扫到 ohos-out 里的副本，而产物树缺少 obsidian-account/ 等
+    // 源码侧依赖，于是产生一条与源码无关的幻影失败。
+    filter: (src) => !/\.test\.[cm]?js$/.test(src),
+  },
 );
 // demo-template（demo 模式用，占空间小，保留以防引用）
 fs.cpSync(
