@@ -44,6 +44,21 @@ function createIgnisTabs(app) {
   ];
 }
 
+// Re-render a tab whose backing data changed. 1.13.x rerenders declaratively
+// through update(); 1.12.x has no update(), so the tab that is on screen
+// re-runs its imperative display(). Without this the 1.12.x settings pane
+// would throw as soon as server settings finished loading.
+function refreshTab(tab) {
+  if (typeof tab.update === "function") {
+    tab.update();
+    return;
+  }
+
+  if (tab.containerEl && tab.containerEl.isShown && tab.containerEl.isShown()) {
+    tab.display();
+  }
+}
+
 function refreshIgnisSettings() {
   const stores = isDemoMode() ? [pluginList] : [serverSettings, pluginList];
 
@@ -54,7 +69,7 @@ function refreshIgnisSettings() {
       }
 
       for (const tab of ignisTabs) {
-        tab.update();
+        refreshTab(tab);
       }
     });
   }
@@ -217,7 +232,11 @@ function patchSettingsModal(plugin) {
   // searchIndex is a 1.13.x settings-search API; 1.12.x has no search index at
   // all, so registering the tabs there must be skipped rather than throwing.
   for (const tab of ignisTabs) {
-    tab.update();
+    // update() primes the declarative setting items and is 1.13.x only; on
+    // 1.12.x the tab renders itself through display() when it is opened.
+    if (typeof tab.update === "function") {
+      tab.update();
+    }
 
     if (setting.searchIndex) {
       setting.searchIndex.addTab(tab);

@@ -1,4 +1,4 @@
-import { SettingTab, setIcon } from "obsidian";
+import { Setting, SettingTab, setIcon } from "obsidian";
 
 function createNavEl(tab, setting) {
   const nav = document.createElement("div");
@@ -39,6 +39,50 @@ function createNavEl(tab, setting) {
   return nav;
 }
 
+// Obsidian 1.13.x renders a tab declaratively: its openTab() calls
+// renderTab(), which walks getSettingDefinitions(). 1.12.x has no such
+// machinery — its SettingTab base defines only hide(), and its openTab() calls
+// display() instead. The definition tree is declarative, but every leaf builds
+// its controls with the classic Setting API (setting.addText/addToggle/...),
+// so 1.12 can render the very same definitions by walking the tree itself.
+function renderDefinitions(containerEl, definitions) {
+  for (const definition of definitions) {
+    if (!definition || (definition.visible && !definition.visible())) {
+      continue;
+    }
+
+    if (definition.type === "group") {
+      const groupEl = containerEl.createDiv({
+        cls: "setting-group" + (definition.cls ? " " + definition.cls : ""),
+      });
+
+      if (definition.heading) {
+        groupEl.createDiv({
+          cls: "setting-item-heading",
+          text: definition.heading,
+        });
+      }
+
+      renderDefinitions(groupEl, definition.items || []);
+      continue;
+    }
+
+    const setting = new Setting(containerEl);
+
+    if (definition.name) {
+      setting.setName(definition.name);
+    }
+
+    if (definition.desc) {
+      setting.setDesc(definition.desc);
+    }
+
+    if (typeof definition.render === "function") {
+      definition.render(setting);
+    }
+  }
+}
+
 class IgnisSettingTab extends SettingTab {
   constructor(app, id, name, icon, definitions) {
     super(app, app.setting);
@@ -48,8 +92,17 @@ class IgnisSettingTab extends SettingTab {
     this.definitions = definitions;
   }
 
+  // 1.13.x path: the base class turns these into real settings, wires them
+  // into the search index and tracks renderedItems.
   getSettingDefinitions() {
     return this.definitions(this);
+  }
+
+  // 1.12.x path: openTab() calls this. Deliberately does NOT define renderTab(),
+  // so 1.13.x keeps using the base implementation above instead of this one.
+  display() {
+    this.containerEl.empty();
+    renderDefinitions(this.containerEl, this.getSettingDefinitions());
   }
 }
 
@@ -96,4 +149,5 @@ export {
   createGroup,
   messageDefinition,
   blockDefinition,
+  renderDefinitions,
 };
