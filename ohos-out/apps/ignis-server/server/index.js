@@ -71287,7 +71287,7 @@ var zlib = require("zlib");
           console.warn(`[vitreus-asar] WARNING: Obsidian ${ver} \u2014 shim \u517C\u5BB9\u6027\u6700\u4F73\u7248\u672C\u662F 1.12.7\uFF08\u5B98\u65B9 Docker \u540C\u6B3E pin\uFF09\uFF0C\u65B0\u7248\u53EF\u80FD\u5F02\u5E38`);
         }
       }
-    } catch (e) {
+    } catch {
     }
     let fileCount = 0;
     let unpackedCount = 0;
@@ -71299,7 +71299,7 @@ var zlib = require("zlib");
     }
     try {
       fs.unlinkSync(workPath);
-    } catch (e) {
+    } catch {
     }
   } catch (e) {
     console.error("[vitreus-asar] extract failed:", e.message);

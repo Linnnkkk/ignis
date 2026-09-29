@@ -166,7 +166,7 @@ app.get("/__vitreus", (req, res) => {
           console.warn(`[vitreus-asar] WARNING: Obsidian ${ver} — shim 兼容性最佳版本是 1.12.7（官方 Docker 同款 pin），新版可能异常`);
         }
       }
-    } catch (e) { /* 版本读取失败不阻断 */ }
+    } catch { /* 版本读取失败不阻断 */ }
 
     let fileCount = 0;
     let unpackedCount = 0;
@@ -196,7 +196,7 @@ app.get("/__vitreus", (req, res) => {
       console.log("[vitreus-asar] unpacked sample:", unpackedList.join(", "));
     }
     // 成功解包后删除原始包（释放 ~9MB；升级时用户重新导入即可）
-    try { fs.unlinkSync(workPath); } catch (e) { /* 删不掉无碍 */ }
+    try { fs.unlinkSync(workPath); } catch { /* 删不掉无碍 */ }
   } catch (e) {
     console.error("[vitreus-asar] extract failed:", e.message);
   }
