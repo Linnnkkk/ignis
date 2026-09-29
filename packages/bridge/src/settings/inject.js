@@ -81,11 +81,47 @@ function writeVersionRow(versionSetting, ignisVersion) {
   );
 }
 
+// 1.12.x has no updateVersionSetting/currentVersionSetting hooks on the About
+// tab, so rewrite the rendered "Installer version:" row in the DOM instead.
+// This is the pre-1.13 code path, kept for the older release line.
+function replaceInstallerVersionRow(setting, ignisVersion) {
+  const container = setting.tabContentContainer || setting.contentEl;
+
+  if (!container) {
+    return;
+  }
+
+  const rows = container.querySelectorAll(".setting-item");
+
+  for (const row of rows) {
+    const desc = row.querySelector(".setting-item-description");
+
+    if (!desc || !desc.textContent.startsWith("Installer version:")) {
+      continue;
+    }
+
+    desc.empty();
+    desc.createEl("strong", { text: `Running in Ignis v${ignisVersion}` });
+    desc.createEl("br");
+    desc.appendText(
+      "Obsidian is served through Ignis. There's no installer to update.",
+    );
+    break;
+  }
+}
+
 // Replace the installer version with the Ignis version.
 function patchVersionRow(setting, ignisVersion) {
   const aboutTab = setting.settingTabs.find((t) => t.id === "about");
 
   if (!aboutTab || aboutTab._ignisOriginalUpdateVersionSetting) {
+    return;
+  }
+
+  // Only 1.13.x exposes these hooks; calling through to a missing
+  // updateVersionSetting would throw while the About tab renders.
+  if (typeof aboutTab.updateVersionSetting !== "function") {
+    replaceInstallerVersionRow(setting, ignisVersion);
     return;
   }
 
@@ -157,10 +193,13 @@ function injectIgnisSettings(setting, plugin) {
     allIgnisNavEls.set(tab.id, tab.navEl);
   }
 
-  setting.tabGroupContainerEl.appendChild(ignis.group);
+  // Obsidian 1.13.x exposes tabGroupContainerEl; 1.12.x only has tabHeadersEl.
+  // Fall back so the Ignis groups mount on both release lines.
+  const headerContainer = setting.tabGroupContainerEl || setting.tabHeadersEl;
+  headerContainer.appendChild(ignis.group);
 
   const corePlugins = createGroup("Ignis Core Plugins", "ignis-core-plugins");
-  setting.tabGroupContainerEl.appendChild(corePlugins.group);
+  headerContainer.appendChild(corePlugins.group);
 
   hideIgnisFromCommunityPlugins(setting);
   setupPluginTabs(setting, corePlugins.items);
@@ -175,9 +214,14 @@ function patchSettingsModal(plugin) {
 
   ignisTabs = createIgnisTabs(plugin.app);
 
+  // searchIndex is a 1.13.x settings-search API; 1.12.x has no search index at
+  // all, so registering the tabs there must be skipped rather than throwing.
   for (const tab of ignisTabs) {
     tab.update();
-    setting.searchIndex.addTab(tab);
+
+    if (setting.searchIndex) {
+      setting.searchIndex.addTab(tab);
+    }
   }
 
   setting.onOpen = function () {
@@ -205,11 +249,17 @@ function unpatchSettingsModal(plugin) {
   }
 
   for (const tab of ignisTabs) {
-    setting.searchIndex.removeTab(tab);
+    if (setting.searchIndex) {
+      setting.searchIndex.removeTab(tab);
+    }
   }
 
   ignisTabs = [];
-  setting.refreshSearch();
+
+  // 1.13.x only; 1.12.x settings has no search index to refresh.
+  if (typeof setting.refreshSearch === "function") {
+    setting.refreshSearch();
+  }
 
   if (setting._ignisOriginalOpenTab) {
     setting.openTab = setting._ignisOriginalOpenTab;
