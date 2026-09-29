@@ -16,6 +16,24 @@ function isObsidian113Plus() {
   return Number(m[1]) > 1 || Number(m[2]) >= 13;
 }
 
+// Obsidian 1.13.x freezes this payload at startup and then consults each
+// capability as a hard gate: `PluginManager.enablePlugin` starts with
+// `if (!Db(Ab.plugins, id)) return false` where Db accepts `true` or an array
+// of ids. An empty object therefore reads as `Ab.plugins === undefined` and
+// silently blocks *every* community plugin ("plugins can't be recognized or
+// loaded"). The desktop main process sends this all-true object unless a
+// managed policy.json restricts the install, so mirror that default.
+const DEFAULT_POLICY = {
+  plugins: true,
+  themes: true,
+  snippets: true,
+  sync: true,
+  publish: true,
+  webViewer: true,
+  devTools: true,
+  insider: true,
+};
+
 const syncHandlers = {
   vault: () => window.__vaultConfig || { id: "default-vault", path: "/" },
   version: () => window.__obsidianVersion || "0.0.0",
@@ -29,9 +47,11 @@ const syncHandlers = {
     isObsidian113Plus()
       ? "I understand and agree that I am not allowed to distribute the Obsidian application, in any form, without explicit approval from the Obsidian team. I also understand that Obsidian is a registered trademark, and I cannot use it without explicit permission granted by the Obsidian team."
       : { accepted: true },
-  // 1.13.x freezes this value at startup for permission policy lookups;
-  // 1.12.x was verified against null.
-  policy: () => (isObsidian113Plus() ? {} : null),
+  // 1.13.x freezes this for per-capability gates (see DEFAULT_POLICY); an
+  // empty object blocks all community plugins. 1.12.x has no policy lookups at
+  // all and was verified against null, so it keeps that shape.
+  policy: () =>
+    isObsidian113Plus() ? Object.assign({}, DEFAULT_POLICY) : null,
   // Unload guards: never block the tab from closing.
   "is-closing": () => false,
   "is-quitting": () => false,
