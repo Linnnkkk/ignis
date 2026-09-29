@@ -1,5 +1,4 @@
 import { setIcon } from "obsidian";
-import { findGroupByTitle } from "./settings-ui.js";
 import { isIgnisPlugin } from "../plugin-registry.js";
 
 // All ignis-managed nav elements (both Ignis group and Ignis Core Plugins group).
@@ -8,6 +7,12 @@ const allIgnisNavEls = new Map(); // tab id -> nav element
 
 // Tracks which plugin IDs have nav items we created.
 const ownedPluginIds = new Set();
+
+let communityObserver = null;
+
+function ignisSection(setting, section) {
+  return setting.tabHeadersEl.querySelector(`[data-section="${section}"]`);
+}
 
 function addPluginNavItem(pluginId, setting, corePluginsItems) {
   const tab = setting.pluginTabs.find((t) => t.id === pluginId);
@@ -61,51 +66,39 @@ function removePluginNavItem(pluginId) {
 function hideIgnisFromCommunityPlugins(setting) {
   const cpTab = setting.settingTabs.find((t) => t.id === "community-plugins");
 
-  if (!cpTab || cpTab._ignisPatched) {
+  if (!cpTab || cpTab._ignisOriginalGetSettingDefinitions) {
     return;
   }
 
-  const origRender = cpTab.renderInstalledPlugin;
+  const original = cpTab.getSettingDefinitions;
+  cpTab._ignisOriginalGetSettingDefinitions = original;
 
-  cpTab.renderInstalledPlugin = function (manifest, ...rest) {
-    if (isIgnisPlugin(manifest.id)) {
-      return;
+  cpTab.getSettingDefinitions = function () {
+    const definitions = original.call(this);
+
+    for (const [id, definition] of Object.entries(this.pluginDefinitions)) {
+      definition.visible = () => !isIgnisPlugin(id);
     }
 
-    return origRender.call(this, manifest, ...rest);
+    return definitions;
   };
 
-  cpTab._ignisPatched = true;
-  cpTab._origRenderInstalledPlugin = origRender;
+  cpTab.update();
 }
 
 function restoreCommunityPlugins(setting) {
-  const cpTab = setting.settingTabs.find(
-    (t) => t.id === "community-plugins",
-  );
+  const cpTab = setting.settingTabs.find((t) => t.id === "community-plugins");
 
-  if (cpTab?._origRenderInstalledPlugin) {
-    cpTab.renderInstalledPlugin = cpTab._origRenderInstalledPlugin;
-    delete cpTab._origRenderInstalledPlugin;
-    delete cpTab._ignisPatched;
+  if (cpTab?._ignisOriginalGetSettingDefinitions) {
+    cpTab.getSettingDefinitions = cpTab._ignisOriginalGetSettingDefinitions;
+    delete cpTab._ignisOriginalGetSettingDefinitions;
+    cpTab.update();
   }
 }
 
 function hideIgnisNavFromCommunityGroup(setting) {
-  const communityGroup = findGroupByTitle(
-    setting.tabHeadersEl,
-    "Community plugins",
-  );
-
-  if (!communityGroup) {
-    return;
-  }
-
-  const items = communityGroup.querySelector(".vertical-tab-header-group-items");
-
-  if (!items) {
-    return;
-  }
+  const items = setting.communityPluginTabContainer;
+  const communityGroup = items.closest(".vertical-tab-header-group");
 
   for (const tab of setting.pluginTabs) {
     if (isIgnisPlugin(tab.id) && tab.navEl?.parentElement === items) {
@@ -120,7 +113,7 @@ function hideIgnisNavFromCommunityGroup(setting) {
   communityGroup.style.display = hasVisible ? "" : "none";
 }
 
-function hideCorePluginsGroupIfEmpty() {
+function hideCorePluginsGroupIfEmpty(setting) {
   let hasConnected = false;
 
   for (const id of ownedPluginIds) {
@@ -132,15 +125,12 @@ function hideCorePluginsGroupIfEmpty() {
     }
   }
 
-  const groups = document.querySelectorAll(".vertical-tab-header-group");
+  const group = ignisSection(setting, "ignis-core-plugins")?.closest(
+    ".vertical-tab-header-group",
+  );
 
-  for (const g of groups) {
-    const title = g.querySelector(".vertical-tab-header-group-title");
-
-    if (title?.textContent === "Ignis Core Plugins") {
-      g.style.display = hasConnected ? "" : "none";
-      break;
-    }
+  if (group) {
+    group.style.display = hasConnected ? "" : "none";
   }
 }
 
@@ -152,57 +142,36 @@ function setupPluginTabs(setting, corePluginsItems) {
   }
 
   hideIgnisNavFromCommunityGroup(setting);
-  hideCorePluginsGroupIfEmpty();
+  hideCorePluginsGroupIfEmpty(setting);
 
-  const communityGroup = findGroupByTitle(
-    setting.tabHeadersEl,
-    "Community plugins",
-  );
+  disconnectCommunityObserver();
 
-  if (communityGroup) {
-    const observer = new MutationObserver(() => {
-      for (const tab of setting.pluginTabs) {
-        if (isIgnisPlugin(tab.id) && tab.id !== "ignis-bridge") {
-          addPluginNavItem(tab.id, setting, corePluginsItems);
-        }
+  communityObserver = new MutationObserver(() => {
+    for (const tab of setting.pluginTabs) {
+      if (isIgnisPlugin(tab.id) && tab.id !== "ignis-bridge") {
+        addPluginNavItem(tab.id, setting, corePluginsItems);
       }
-
-      hideIgnisNavFromCommunityGroup(setting);
-      hideCorePluginsGroupIfEmpty();
-    });
-
-    observer.observe(communityGroup, { childList: true, subtree: true });
-
-    const modalEl = setting.tabHeadersEl.closest(".modal");
-
-    if (modalEl && modalEl.parentElement) {
-      const cleanupObserver = new MutationObserver(() => {
-        if (!setting.tabHeadersEl.isConnected) {
-          observer.disconnect();
-          cleanupObserver.disconnect();
-        }
-      });
-
-      cleanupObserver.observe(modalEl.parentElement, {
-        childList: true,
-      });
     }
+
+    hideIgnisNavFromCommunityGroup(setting);
+    hideCorePluginsGroupIfEmpty(setting);
+  });
+
+  communityObserver.observe(setting.communityPluginTabContainer, {
+    childList: true,
+    subtree: true,
+  });
+}
+
+function disconnectCommunityObserver() {
+  if (communityObserver) {
+    communityObserver.disconnect();
+    communityObserver = null;
   }
 }
 
 function reconcilePluginTabs(setting) {
-  const corePluginsGroup = findGroupByTitle(
-    setting.tabHeadersEl,
-    "Ignis Core Plugins",
-  );
-
-  if (!corePluginsGroup) {
-    return;
-  }
-
-  const corePluginsItems = corePluginsGroup.querySelector(
-    ".vertical-tab-header-group-items",
-  );
+  const corePluginsItems = ignisSection(setting, "ignis-core-plugins");
 
   if (!corePluginsItems) {
     return;
@@ -225,7 +194,7 @@ function reconcilePluginTabs(setting) {
   }
 
   hideIgnisNavFromCommunityGroup(setting);
-  hideCorePluginsGroupIfEmpty();
+  hideCorePluginsGroupIfEmpty(setting);
 }
 
 function clearOwnedPluginIds() {
@@ -239,4 +208,5 @@ export {
   hideIgnisFromCommunityPlugins,
   restoreCommunityPlugins,
   clearOwnedPluginIds,
+  disconnectCommunityObserver,
 };

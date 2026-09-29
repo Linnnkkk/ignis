@@ -7,7 +7,9 @@ import {
 import {
   patchSettingsModal,
   unpatchSettingsModal,
+  refreshIgnisSettings,
 } from "./settings/inject.js";
+import { watchPluginToggles } from "./settings/plugin-list.js";
 import * as pluginRegistry from "./plugin-registry.js";
 import { initStatusBar } from "./status-bar.js";
 import { initSaveNotice } from "./save-notice.js";
@@ -31,6 +33,8 @@ class IgnisBridgePlugin extends Plugin {
 
     await pluginRegistry.refresh();
     patchSettingsModal(this);
+    refreshIgnisSettings();
+    this._pluginTogglesUnsub = watchPluginToggles();
     startDemoGuards();
     this._statusBarUnsub = initStatusBar(this);
     this._saveNoticeUnsub = initSaveNotice();
@@ -97,6 +101,10 @@ class IgnisBridgePlugin extends Plugin {
 
     if (this._imageRetryUnsub) {
       this._imageRetryUnsub();
+    }
+
+    if (this._pluginTogglesUnsub) {
+      this._pluginTogglesUnsub();
     }
 
     unpatchSettingsModal(this);

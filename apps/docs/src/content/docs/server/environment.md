@@ -17,8 +17,8 @@ Configure the server through environment variables, set in the `environment:` bl
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OBSIDIAN_VERSION` | `1.12.7` | Obsidian version fetched on first run. Each release pins a known-good version. |
-| `OBSIDIAN_PACKAGE` | unset | Path to a pre-placed Obsidian package (`.deb`, `.asar.gz`, or `.asar`) to unpack instead of downloading, for offline installs. |
+| `OBSIDIAN_VERSION` | unset | Run a different Obsidian version than the version pinned by Ignis. Only newer versions are allowed, with no guarantee that Ignis works with them. |
+| `OBSIDIAN_PACKAGE` | unset | Path to a pre-placed Obsidian package (`.deb`, `.asar.gz`, or `.asar`) to unpack instead of downloading, for offline installs. The package must be the version pinned by Ignis or newer. |
 | `OBSIDIAN_ASSETS_PATH` | `/app/obsidian-app` | Where the extracted Obsidian files live. Point it at a pre-extracted directory to skip the download. |
 
 ## File ownership

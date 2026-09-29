@@ -135,6 +135,8 @@ module.exports = {
     process.env.OBSIDIAN_ASSETS_PATH ||
     path.join(REPO_ROOT, "investigation", "obsidian_1.13.7_unpacked"),
 
+  obsidianTermsOverride: process.env.OBSIDIAN_TERMS_STRING || "",
+
   get obsidianVersion() {
     // Read from the same path the assets are served from, so the version matches what ships.
     const assetsPath = this.obsidianAssetsPath;

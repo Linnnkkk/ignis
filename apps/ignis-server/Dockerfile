@@ -61,7 +61,7 @@ RUN chmod +x /app/apps/ignis-server/scripts/entrypoint.sh
 
 ENV PORT=8080
 ENV VAULT_ROOT=/vaults
-ENV OBSIDIAN_VERSION=1.13.7
+ENV IGNIS_OBSIDIAN_PIN=1.13.7
 ENV OBSIDIAN_ASSETS_PATH=/app/obsidian-app
 ENV PUID=1000
 ENV PGID=1000

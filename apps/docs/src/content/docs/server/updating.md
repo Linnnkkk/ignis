@@ -12,7 +12,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Your vaults, data, and settings are untouched. If the new image pins a different Obsidian version, the container will download the new version on startup. The [Changelog](/docs/changelog/) lists what each release includes.
+Your vaults, data, and settings are untouched. If the new image pins a different Obsidian version, the container will download the new version on startup. For an offline install using `OBSIDIAN_PACKAGE`, replace the package with the pinned version in the new image, or newer, before updating. The [Changelog](/docs/changelog/) lists what each release includes.
 
 ## Obsidian version
 

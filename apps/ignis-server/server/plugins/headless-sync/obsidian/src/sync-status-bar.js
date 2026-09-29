@@ -1,5 +1,4 @@
 const { setIcon } = require("obsidian");
-const api = require("./api");
 
 const CHANNEL = "plugin:headless-sync";
 
@@ -177,6 +176,7 @@ function initSyncStatusBar(plugin) {
       return;
     }
 
+    plugin.setVaultState(payload);
     item.style.display = "";
 
     if (payload.status === "running") {
@@ -230,18 +230,14 @@ function initSyncStatusBar(plugin) {
     }
   }
 
-  api
-    .getVaults()
-    .then((data) => {
-      const vaults = data.vaults || [];
-      const vault = vaults.find((v) => v.vaultId === vaultId);
+  plugin.loadVaults().then((vaults) => {
+    const vault = vaults?.find((v) => v.vaultId === vaultId);
 
-      if (vault) {
-        item.style.display = "";
-        updateState(vault.status, vault.error);
-      }
-    })
-    .catch(() => {});
+    if (vault) {
+      item.style.display = "";
+      updateState(vault.status, vault.error);
+    }
+  });
 
   // Reflect WebSocket disconnect/reconnect in the indicator.
   let wasDisconnected = false;
@@ -255,17 +251,13 @@ function initSyncStatusBar(plugin) {
     } else if (open && wasDisconnected) {
       wasDisconnected = false;
 
-      api
-        .getVaults()
-        .then((data) => {
-          const vaults = data.vaults || [];
-          const vault = vaults.find((v) => v.vaultId === vaultId);
+      plugin.loadVaults().then((vaults) => {
+        const vault = vaults?.find((v) => v.vaultId === vaultId);
 
-          if (vault) {
-            updateState(vault.status, vault.error);
-          }
-        })
-        .catch(() => {});
+        if (vault) {
+          updateState(vault.status, vault.error);
+        }
+      });
     }
   });
 

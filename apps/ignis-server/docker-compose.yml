@@ -5,8 +5,6 @@ services:
       dockerfile: apps/ignis-server/Dockerfile
     ports:
       - "8082:8080"
-    environment:
-      - OBSIDIAN_VERSION=1.13.7
     volumes:
       - ./vaults:/vaults
       - ./data:/app/data

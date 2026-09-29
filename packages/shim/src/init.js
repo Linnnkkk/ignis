@@ -13,9 +13,9 @@ import { setInputCacheLimits } from "./fs/input-cache.js";
 import { setSilentByDefault } from "./fs/write-durability.js";
 import { setDirectFetchHosts } from "./util/url.js";
 import { autoTrustDemoVaults, maybeProvisionDemoVault } from "./demo.js";
-import { initNativeMenuGuard } from "./native-menu-guard.js";
-import { initSettingsPopoutGuard } from "./settings-popout-guard.js";
-import { initSpellcheckGuard } from "./spellcheck-guard.js";
+import { initNativeMenuGuard } from "./guards/native-menu-guard.js";
+import { initSettingsWindowGuard } from "./guards/settings-window-guard.js";
+import { initSpellcheckGuard } from "./guards/spellcheck-guard.js";
 
 let bootstrapVirtualPlugins = [];
 
@@ -262,7 +262,7 @@ function resolveWorkspaceAndAppearance() {
   resolveWorkspaceName();
   loadPresetIfRequested();
   initNativeMenuGuard();
-  initSettingsPopoutGuard();
+  initSettingsWindowGuard();
   initSpellcheckGuard();
 }
 

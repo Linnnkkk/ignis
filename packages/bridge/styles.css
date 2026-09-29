@@ -1,4 +1,18 @@
+.setting-group.ignis-plain .setting-items {
+  background-color: transparent;
+  border: none;
+}
+
+.setting-group.ignis-plain .setting-item {
+  padding: 0;
+}
+
+.ignis-message .setting-item-description {
+  font-size: var(--font-ui-small);
+}
+
 .ignis-header {
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -52,6 +66,8 @@
 }
 
 .ignis-update-indicator {
+  min-width: 10em;
+  text-align: right;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   text-decoration: none;
@@ -86,6 +102,7 @@
 }
 
 .ignis-insecure-callout {
+  flex: 1;
   display: flex;
   gap: 12px;
   padding: 12px 14px;
@@ -240,13 +257,6 @@
   font-size: var(--font-ui-smaller);
   pointer-events: none;
   z-index: 20;
-}
-
-.ignis-tab-description {
-  padding: 0 16px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  margin-bottom: 16px;
 }
 
 .ignis-list-editor {

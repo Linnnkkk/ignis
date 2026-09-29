@@ -1,8 +1,8 @@
 // Disable spellchecker dropdown since browser spellchecker cannot be set programmatically.
 // Direct users to system settings instead.
 
-import { detectBrowser } from "./browser-detect.js";
-import { copyText } from "./util/clipboard.js";
+import { detectBrowser } from "../browser-detect.js";
+import { copyText } from "../util/clipboard.js";
 
 // Each browser's language / spellcheck settings page. Safari has none: its spellcheck is OS-level.
 const SETTINGS_URLS = {

@@ -21,16 +21,17 @@ const syncHandlers = {
   version: () => window.__obsidianVersion || "0.0.0",
   "is-dev": () => false,
 
-  // Obsidian 1.13.x startup license check. The desktop main process returns
-  // this exact string; anything else makes Obsidian call window.close() and
-  // abort startup with a blank page. 1.12.x only checks truthiness, so it
-  // keeps the object shape it was verified against.
+  // Official terms extraction is injected into window.__obsidianTerms by index-html.js.
+  // Keep the verified 1.12.x payload shape while using the exact extracted
+  // 1.13.x license string from the user's own Obsidian package.
   terms: () =>
     isObsidian113Plus()
-      ? "I understand and agree that I am not allowed to distribute the Obsidian application, in any form, without explicit approval from the Obsidian team. I also understand that Obsidian is a registered trademark, and I cannot use it without explicit permission granted by the Obsidian team."
+      ? window.__obsidianTerms ||
+        "I understand and agree that I am not allowed to distribute the Obsidian application, in any form, without explicit approval from the Obsidian team. I also understand that Obsidian is a registered trademark, and I cannot use it without explicit permission granted by the Obsidian team."
       : { accepted: true },
-  // 1.13.x freezes this value at startup for permission policy lookups;
-  // 1.12.x was verified against null.
+  // 1.13.x freezes this value at startup. The policy object is a capability
+  // gate in upstream Obsidian; returning an object keeps the channel alive,
+  // while the server-side/default policy shim enables the supported features.
   policy: () => (isObsidian113Plus() ? {} : null),
   // Unload guards: never block the tab from closing.
   "is-closing": () => false,

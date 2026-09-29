@@ -13,9 +13,16 @@ class IgnisHeadlessSyncPlugin extends Plugin {
       return;
     }
 
-    this._syncStatusBarCleanup = initSyncStatusBar(this);
+    this.serverStatus = null;
+    this.serverStatusFailed = false;
+    this.vaults = null;
+    this.vaultsError = null;
+    this._settingTab = new HeadlessSyncSettingTab(this.app, this);
 
-    this.addSettingTab(new HeadlessSyncSettingTab(this.app, this));
+    this._syncStatusBarCleanup = initSyncStatusBar(this);
+    this.loadServerStatus();
+
+    this.addSettingTab(this._settingTab);
 
     this._coreSyncGuard = startCoreSyncGuard(this, api);
 
@@ -53,6 +60,50 @@ class IgnisHeadlessSyncPlugin extends Plugin {
     });
 
     console.log("[ignis-headless-sync] Loaded");
+  }
+
+  async loadServerStatus() {
+    try {
+      this.serverStatus = await api.getStatus();
+      this.serverStatusFailed = false;
+    } catch {
+      this.serverStatus = null;
+      this.serverStatusFailed = true;
+    }
+
+    this._settingTab.updateIfChanged();
+  }
+
+  async loadVaults() {
+    try {
+      const data = await api.getVaults();
+      this.vaults = data.vaults || [];
+      this.vaultsError = null;
+    } catch (e) {
+      this.vaults = null;
+      this.vaultsError = e.message;
+    }
+
+    this._settingTab.updateIfChanged();
+    return this.vaults;
+  }
+
+  setVaultState(vaultState) {
+    if (!this.vaults) {
+      return;
+    }
+
+    const index = this.vaults.findIndex(
+      (v) => v.vaultId === vaultState.vaultId,
+    );
+
+    if (index === -1) {
+      this.vaults.push(vaultState);
+    } else {
+      this.vaults[index] = vaultState;
+    }
+
+    this._settingTab.updateIfChanged();
   }
 
   onunload() {

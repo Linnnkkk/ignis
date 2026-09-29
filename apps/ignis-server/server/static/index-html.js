@@ -3,8 +3,13 @@ const path = require("path");
 const config = require("../config");
 const { getVersion } = require("../version");
 const { versionedSrc } = require("./cache-headers");
+const { getObsidianTerms } = require("./obsidian-terms");
 
 let cachedHtml = null;
+
+function scriptJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
 
 function buildIndexHtml() {
   if (cachedHtml) {
@@ -33,6 +38,7 @@ function buildIndexHtml() {
   const templatePath = path.join(__dirname, "..", "assets", "index.html");
   let html = fs.readFileSync(templatePath, "utf-8");
 
+  html = html.replace("__OBSIDIAN_TERMS__", scriptJson(getObsidianTerms()));
   html = html.replace("__IGNIS_UI_SRC__", `ignis-ui.js?v=${version}`);
   html = html.replace("__SHIM_LOADER_SRC__", `shim-loader.js?v=${version}`);
   html = html.replace(

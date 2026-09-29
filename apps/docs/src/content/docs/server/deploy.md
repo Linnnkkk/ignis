@@ -147,7 +147,7 @@ If the container cannot reach the internet on first run, you can download the Ob
       - OBSIDIAN_PACKAGE=/packages/obsidian.deb
 ```
 
-Ignis will unpack the local copy instead of downloading. It's recommended to match the Obsidian version the Ignis release pins.
+Ignis will unpack the local copy instead of downloading. The package must be the Obsidian version pinned by Ignis, or newer.
 
 ### Backups
 

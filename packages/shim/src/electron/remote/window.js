@@ -1,5 +1,9 @@
 import { getClipboard } from "./native-clipboard.js";
+import { webFrame } from "../web-frame.js";
 import { reportInsecureApi } from "../../util/insecure-api.js";
+
+const MIN_FRAME_ZOOM_LEVEL = -2.5;
+const MAX_FRAME_ZOOM_LEVEL = 3;
 
 const currentWindowState = {
   title: "Obsidian",
@@ -82,24 +86,18 @@ const currentWindow = {
   },
 
   setSize(width, height) {},
+  setMinimumSize(width, height) {},
   setPosition(x, y) {},
   center() {},
 
-  // Obsidian 1.13.x settings window sets a minimum size on the frame.
-  // The browser window cannot be constrained; accept and ignore.
-  setMinimumSize() {},
+  setFrameZoomLevel(level) {
+    webFrame.setZoomLevel(
+      Math.min(MAX_FRAME_ZOOM_LEVEL, Math.max(MIN_FRAME_ZOOM_LEVEL, level)),
+    );
+  },
 
   setTrafficLightPosition() {},
   setWindowButtonPosition() {},
-
-  // Obsidian 1.13.x settings window calls this to sync the frame zoom level
-  // with the webFrame zoom. The browser window is the frame, so map it onto
-  // the same webFrame zoom used by electron.webFrame.
-  setFrameZoomLevel(level) {
-    if (typeof level === "number" && window.__shimWebFrame) {
-      window.__shimWebFrame.setZoomLevel(level);
-    }
-  },
 
   get webContents() {
     return webContentsShim._current();
@@ -280,9 +278,6 @@ const currentWebContents = {
       });
   },
   replaceMisspelling(word) {},
-
-  // macOS dictionary lookup; no equivalent in the browser.
-  showDefinitionForSelection() {},
 
   session: {
     availableSpellCheckerLanguages: [],
