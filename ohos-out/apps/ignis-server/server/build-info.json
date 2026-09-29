@@ -1,5 +1,8 @@
 {
-  "semver": "0.8.12",
-  "build": "vitreus",
-  "version": "0.8.12+vitreus"
+  "semver": "0.8.11",
+  "build": "mod.1",
+  "version": "0.8.11-mod",
+  "upstream": "0.8.11",
+  "fork": "mod",
+  "forkRevision": 1
 }
