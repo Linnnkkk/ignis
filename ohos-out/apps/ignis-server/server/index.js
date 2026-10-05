@@ -40495,6 +40495,7 @@ var require_acorn = __commonJS({
 var require_obsidian_terms = __commonJS({
   "apps/ignis-server/server/static/obsidian-terms.js"(exports2, module2) {
     var fs2 = require("fs");
+    var crypto = require("crypto");
     var path2 = require("path");
     var acorn = require_acorn();
     var config2 = require_config();
@@ -40600,7 +40601,7 @@ var require_obsidian_terms = __commonJS({
         return null;
       }
     }
-    function resolveObsidianTerms({
+    function resolveObsidianTermsUncached({
       assetsPath = config2.obsidianAssetsPath,
       override = config2.obsidianTermsOverride
     } = {}) {
@@ -40641,6 +40642,53 @@ var require_obsidian_terms = __commonJS({
         resolved = resolveObsidianTerms();
       }
       return resolved;
+    }
+    var TERMS_CACHE_FILE = ".vitreus-terms-cache.json";
+    function contentKey(assetsPath) {
+      const h = crypto.createHash("sha1");
+      let any = false;
+      for (const name of ["app.js", "main.js"]) {
+        try {
+          h.update(name + "\0");
+          h.update(fs2.readFileSync(path2.join(assetsPath, name)));
+          any = true;
+        } catch {
+          h.update("missing");
+        }
+      }
+      return any ? h.digest("hex") : null;
+    }
+    function resolveObsidianTerms(opts = {}) {
+      const assetsPath = opts.assetsPath ?? config2.obsidianAssetsPath;
+      const override = opts.override ?? config2.obsidianTermsOverride;
+      if (override) {
+        return resolveObsidianTermsUncached(opts);
+      }
+      const t0 = Date.now();
+      let key = null;
+      const cacheFile = path2.join(assetsPath, TERMS_CACHE_FILE);
+      try {
+        key = contentKey(assetsPath);
+        if (key !== null && fs2.existsSync(cacheFile)) {
+          const c = JSON.parse(fs2.readFileSync(cacheFile, "utf-8"));
+          if (c && c.key === key && "terms" in c) {
+            console.log(`[ignis] Obsidian terms: cache hit (${Date.now() - t0}ms)`);
+            return c.terms;
+          }
+        }
+      } catch (e) {
+        console.warn(`[ignis] Obsidian terms: cache read failed: ${e.message}`);
+      }
+      const terms = resolveObsidianTermsUncached(opts);
+      console.log(`[ignis] Obsidian terms: parsed in ${Date.now() - t0}ms`);
+      if (key !== null) {
+        try {
+          fs2.writeFileSync(cacheFile, JSON.stringify({ key, terms }));
+        } catch (e) {
+          console.warn(`[ignis] Obsidian terms: cache write failed: ${e.message}`);
+        }
+      }
+      return terms;
     }
     module2.exports = {
       getObsidianTerms: getObsidianTerms2,
@@ -71365,8 +71413,11 @@ var server = app.listen(config.port, config.host, async () => {
   console.log(`[ignis] Server running on http://${config.host}:${config.port}`);
   console.log(`[ignis] Vault root: ${config.vaultRoot}`);
   console.log(`[ignis] Vaults: ${Object.keys(config.vaults).join(", ")}`);
+  const tStart = Date.now();
   getObsidianTerms();
+  console.log(`[ignis] startup: terms ${Date.now() - tStart}ms`);
   await initPlugins({ app, config, wss, watcher });
+  console.log(`[ignis] startup: initPlugins done +${Date.now() - tStart}ms`);
   const bundledPluginDirs = getBundledPluginDirs();
   for (const { distDir } of bundledPluginDirs) {
     app.use(express.static(distDir));
@@ -71375,6 +71426,7 @@ var server = app.listen(config.port, config.host, async () => {
     BRIDGE_PLUGIN_ID,
     ...bundledPluginDirs.map((d) => d.bundledPluginId)
   ]);
+  console.log(`[ignis] startup: migrate done +${Date.now() - tStart}ms`);
   bootstrapCache.warmUp().catch((e) => console.warn("[bootstrap] warm-up error:", e.message));
 });
 var wss = setupWebSocket(server, {

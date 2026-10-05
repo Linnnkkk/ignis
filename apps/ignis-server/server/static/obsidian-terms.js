@@ -1,4 +1,5 @@
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 const acorn = require("acorn");
 const config = require("../config");
@@ -158,7 +159,7 @@ function extractFromAsset(assetsPath, name, extract) {
   }
 }
 
-function resolveObsidianTerms({
+function resolveObsidianTermsUncached({
   assetsPath = config.obsidianAssetsPath,
   override = config.obsidianTermsOverride,
 } = {}) {
@@ -206,6 +207,69 @@ function getObsidianTerms() {
   }
 
   return resolved;
+}
+
+// ---- Vitreus：条款串落盘缓存 ----
+// 为什么：extractTermsFromRenderer 用 acorn 对整份 app.js（数 MB）做完整 AST 解析，
+// 在手机上 Node 以 --jitless（纯解释）运行时要占用主线程数秒；而它发生在 listen 回调里，
+// 期间 WebView 的首批请求全部排队——真机冷启动进网页要白等 ~6 秒的主因（热启动 <0.1s，
+// 因为结果已 memo）。条款串只取决于组件包内容，按内容哈希缓存到资源目录，冷启动命中直接读。
+const TERMS_CACHE_FILE = ".vitreus-terms-cache.json";
+
+function contentKey(assetsPath) {
+  const h = crypto.createHash("sha1");
+  let any = false;
+
+  for (const name of ["app.js", "main.js"]) {
+    try {
+      h.update(name + "\0");
+      h.update(fs.readFileSync(path.join(assetsPath, name)));
+      any = true;
+    } catch {
+      h.update("missing");
+    }
+  }
+
+  return any ? h.digest("hex") : null;
+}
+
+function resolveObsidianTerms(opts = {}) {
+  const assetsPath = opts.assetsPath ?? config.obsidianAssetsPath;
+  const override = opts.override ?? config.obsidianTermsOverride;
+
+  if (override) {
+    return resolveObsidianTermsUncached(opts);
+  }
+
+  const t0 = Date.now();
+  let key = null;
+  const cacheFile = path.join(assetsPath, TERMS_CACHE_FILE);
+
+  try {
+    key = contentKey(assetsPath);
+    if (key !== null && fs.existsSync(cacheFile)) {
+      const c = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+      if (c && c.key === key && "terms" in c) {
+        console.log(`[ignis] Obsidian terms: cache hit (${Date.now() - t0}ms)`);
+        return c.terms;
+      }
+    }
+  } catch (e) {
+    console.warn(`[ignis] Obsidian terms: cache read failed: ${e.message}`);
+  }
+
+  const terms = resolveObsidianTermsUncached(opts);
+  console.log(`[ignis] Obsidian terms: parsed in ${Date.now() - t0}ms`);
+
+  if (key !== null) {
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify({ key, terms }));
+    } catch (e) {
+      console.warn(`[ignis] Obsidian terms: cache write failed: ${e.message}`);
+    }
+  }
+
+  return terms;
 }
 
 module.exports = {

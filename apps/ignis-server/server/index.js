@@ -295,9 +295,12 @@ const server = app.listen(config.port, config.host, async () => {
   console.log(`[ignis] Vault root: ${config.vaultRoot}`);
   console.log(`[ignis] Vaults: ${Object.keys(config.vaults).join(", ")}`);
 
+  const tStart = Date.now();
   getObsidianTerms();
+  console.log(`[ignis] startup: terms ${Date.now() - tStart}ms`);
 
   await initPlugins({ app, config, wss, watcher });
+  console.log(`[ignis] startup: initPlugins done +${Date.now() - tStart}ms`);
 
   const bundledPluginDirs = getBundledPluginDirs();
 
@@ -309,6 +312,8 @@ const server = app.listen(config.port, config.host, async () => {
     BRIDGE_PLUGIN_ID,
     ...bundledPluginDirs.map((d) => d.bundledPluginId),
   ]);
+
+  console.log(`[ignis] startup: migrate done +${Date.now() - tStart}ms`);
 
   bootstrapCache
     .warmUp()
