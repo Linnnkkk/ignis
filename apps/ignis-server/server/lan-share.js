@@ -6,12 +6,17 @@
 // 文件变更广播（broadcastToVault）互通，家人设备实时同步不掉线。
 // 管理 API 仅回环可达（外部摸不到），供 ArkTS 壳层调用。
 const url = require("url");
+const https = require("https");
+const config = require("./config");
 const digestAuth = require("./digest-auth");
+const tlsCert = require("./tls-cert");
 
 const state = {
-  server: null, // http.Server | null
+  server: null, // http.Server | https.Server | null
   port: 0,
   since: 0,
+  tls: false,
+  fingerprint: "", // 自签证书 SHA-256 指纹（TLS 开启时，供用户首次放行时比对）
 };
 
 function status() {
@@ -20,6 +25,8 @@ function status() {
     port: state.port,
     since: state.since,
     user: digestAuth.getCredentials()?.user || "",
+    tls: state.tls,
+    fingerprint: state.fingerprint,
   };
 }
 
@@ -28,10 +35,13 @@ function pickPort() {
   return 30000 + Math.floor(Math.random() * 30000);
 }
 
-function listenOn(app, port, wss) {
+function listenOn(app, port, tlsOpts) {
   return new Promise((resolve, reject) => {
     const tryPort = (p, attemptsLeft) => {
-      const srv = app.listen(p, "0.0.0.0");
+      // TLS：同一个 express app 套 https.Server（路由零复制）；否则沿用明文 http
+      const srv = tlsOpts
+        ? https.createServer({ key: tlsOpts.key, cert: tlsOpts.cert }, app).listen(p, "0.0.0.0")
+        : app.listen(p, "0.0.0.0");
       srv.once("listening", () => resolve(srv));
       srv.once("error", (err) => {
         if (err.code === "EADDRINUSE" && attemptsLeft > 0) {
@@ -45,20 +55,27 @@ function listenOn(app, port, wss) {
   });
 }
 
-async function enable(app, wss, user, pass, portHint) {
-  // 幂等：已开且凭证没变 → 直接返回现状
+async function enable(app, wss, user, pass, portHint, useTls = false, ips = []) {
+  // TLS：先取证书（SAN 不覆盖当前 IP 时会换新证书，此时必须重启 serverB 才生效）
+  let tlsOpts = null;
+  if (useTls) {
+    tlsOpts = tlsCert.ensure(config.dataRoot, ips);
+  }
+  // 幂等：已开且凭证、TLS 档位、证书都没变 → 直接返回现状
   if (state.server && digestAuth.getCredentials()?.user === user &&
-      digestAuth.getCredentials()?.pass === pass) {
+      digestAuth.getCredentials()?.pass === pass &&
+      state.tls === !!useTls &&
+      (!useTls || state.fingerprint === tlsOpts.fingerprint)) {
     return status();
   }
-  // 凭证变更 → 换血重启（关旧再开新）
+  // 凭证 / TLS 档位变更 → 换血重启（关旧再开新）
   if (state.server) {
     await disable();
   }
   digestAuth.setCredentials(user, pass);
 
   const wantPort = Number(portHint) > 0 ? Number(portHint) : pickPort();
-  const srv = await listenOn(app, wantPort, wss);
+  const srv = await listenOn(app, wantPort, tlsOpts);
 
   // WS 同池转发：serverB 的 upgrade → 主 wss 处理
   // （wss 以 { server } 模式创建，但 handleUpgrade 始终可手动调；
@@ -77,7 +94,9 @@ async function enable(app, wss, user, pass, portHint) {
   state.server = srv;
   state.port = srv.address().port;
   state.since = Date.now();
-  console.log(`[lan-share] serverB listening on 0.0.0.0:${state.port} (digest auth on)`);
+  state.tls = !!useTls;
+  state.fingerprint = tlsOpts ? tlsOpts.fingerprint : "";
+  console.log(`[lan-share] serverB listening on 0.0.0.0:${state.port} (digest auth on, ${state.tls ? "TLS" : "plain http"})`);
   return status();
 }
 
@@ -90,6 +109,8 @@ function disable() {
     state.server = null;
     state.port = 0;
     state.since = 0;
+    state.tls = false;
+    state.fingerprint = "";
     digestAuth.setCredentials(null, null);
     // closeAllConnections：Node 18.2+，同时掐断活跃连接（关闭语义 = 家人设备立刻断开）
     if (typeof srv.closeAllConnections === "function") {
@@ -119,11 +140,12 @@ function setupLanShare(app, wss) {
     const action = body.action;
 
     if (action === "enable") {
-      const { user, pass, port } = body;
+      const { user, pass, port, tls, ips } = body;
       if (!user || !pass || String(pass).length < 4) {
         return res.status(400).json({ error: "user and pass (>=4 chars) required" });
       }
-      enable(app, wss, String(user), String(pass), Number(port) || 0)
+      const ipList = Array.isArray(ips) ? ips.map(String).filter(tlsCert.isIPv4) : [];
+      enable(app, wss, String(user), String(pass), Number(port) || 0, tls === true, ipList)
         .then((st) => res.json(st))
         .catch((e) => res.status(500).json({ error: String(e && e.message || e) }));
       return;

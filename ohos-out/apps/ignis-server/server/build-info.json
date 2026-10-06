@@ -1,8 +1,8 @@
 {
-  "semver": "0.8.14",
+  "semver": "0.8.16",
   "build": "mod.1",
-  "version": "0.8.14-mod",
-  "upstream": "0.8.14",
+  "version": "0.8.16-mod",
+  "upstream": "0.8.16",
   "fork": "mod",
   "forkRevision": 1
 }

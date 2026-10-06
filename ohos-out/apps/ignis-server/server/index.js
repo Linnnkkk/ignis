@@ -23587,6 +23587,7 @@ var require_write_coalescer = __commonJS({
     }
     var lastWriteTime = /* @__PURE__ */ new Map();
     var pending = /* @__PURE__ */ new Map();
+    var inFlight = /* @__PURE__ */ new Map();
     var giveUpSubs = /* @__PURE__ */ new Set();
     function onFlushGiveUp(fn) {
       giveUpSubs.add(fn);
@@ -23633,8 +23634,29 @@ var require_write_coalescer = __commonJS({
         return { mtime: Date.now(), size: estimateSize(data, encoding) };
       }
     }
+    function queueDiskWrite(absPath, write) {
+      const previous = inFlight.get(absPath)?.tail || Promise.resolve();
+      const result = previous.then(() => writeToDisk(absPath, write.data, write.encoding)).finally(() => {
+        if (inFlight.get(absPath)?.write === write) {
+          inFlight.delete(absPath);
+        }
+      });
+      inFlight.set(absPath, { write, tail: result.catch(() => {
+      }) });
+      return result;
+    }
+    function isRetry(entry) {
+      return entry.attempts > 0;
+    }
+    function isAtOrUnder(absPath, absDir) {
+      const prefix = absDir.endsWith(path2.sep) ? absDir : absDir + path2.sep;
+      return absPath === absDir || absPath.startsWith(prefix);
+    }
+    function inFlightTails(isTarget) {
+      return [...inFlight].filter(([absPath]) => isTarget(absPath)).map(([, { tail }]) => tail);
+    }
     function requeueFailed(absPath, entry, err) {
-      if (pending.has(absPath)) {
+      if (pending.has(absPath) || inFlight.has(absPath)) {
         return;
       }
       const attempts = entry.attempts + 1;
@@ -23663,8 +23685,7 @@ var require_write_coalescer = __commonJS({
       }
       clearTimeout(entry.timer);
       pending.delete(absPath);
-      const { data, encoding } = entry;
-      writeToDisk(absPath, data, encoding).then(
+      queueDiskWrite(absPath, entry).then(
         () => emitFlushSuccess(absPath),
         (err) => {
           console.error(`[write-coalesce] Flush failed for ${absPath}:`, err);
@@ -23700,54 +23721,36 @@ var require_write_coalescer = __commonJS({
           clearTimeout(pending.get(absPath).timer);
           pending.delete(absPath);
         }
-        return writeToDisk(absPath, data, encoding);
+        return queueDiskWrite(absPath, { data, encoding });
       }
       const existing = pending.get(absPath);
       if (existing) {
-        existing.data = data;
-        existing.encoding = encoding;
-        existing.attempts = 0;
-        scheduleFlush(absPath);
-      } else {
-        pending.set(absPath, {
-          data,
-          encoding,
-          timer: null,
-          attempts: 0
-        });
-        scheduleFlush(absPath);
+        clearTimeout(existing.timer);
       }
+      pending.set(absPath, { data, encoding, timer: null, attempts: 0 });
+      scheduleFlush(absPath);
       return { mtime: Date.now(), size: estimateSize(data, encoding) };
     }
     function getPending(absPath) {
-      const entry = pending.get(absPath);
+      const entry = pending.get(absPath) || inFlight.get(absPath)?.write;
       if (entry) {
         return { data: entry.data, encoding: entry.encoding };
       }
       return null;
     }
     function pendingPaths() {
-      return Array.from(pending.keys());
-    }
-    function cancelPending(absPath) {
-      const entry = pending.get(absPath);
-      if (!entry) {
-        return false;
-      }
-      clearTimeout(entry.timer);
-      pending.delete(absPath);
-      return true;
+      return [.../* @__PURE__ */ new Set([...pending.keys(), ...inFlight.keys()])];
     }
     async function flushPending(absPath) {
       const entry = pending.get(absPath);
       if (!entry) {
+        await inFlight.get(absPath)?.tail;
         return false;
       }
       clearTimeout(entry.timer);
       pending.delete(absPath);
-      const { data, encoding } = entry;
       try {
-        await writeToDisk(absPath, data, encoding);
+        await queueDiskWrite(absPath, entry);
       } catch (e) {
         requeueFailed(absPath, entry, e);
         throw e;
@@ -23755,44 +23758,69 @@ var require_write_coalescer = __commonJS({
       emitFlushSuccess(absPath);
       return true;
     }
-    function cancelPendingSubtree(absDir) {
-      const prefix = absDir.endsWith(path2.sep) ? absDir : absDir + path2.sep;
-      let dropped = 0;
-      for (const [absPath, entry] of pending) {
-        if (absPath === absDir || absPath.startsWith(prefix)) {
-          clearTimeout(entry.timer);
-          pending.delete(absPath);
-          dropped++;
-        }
-      }
-      return dropped;
-    }
     async function flushPendingSubtree(absDir) {
-      const prefix = absDir.endsWith(path2.sep) ? absDir : absDir + path2.sep;
-      const targets = [];
-      for (const absPath of pending.keys()) {
-        if (absPath === absDir || absPath.startsWith(prefix)) {
-          targets.push(absPath);
-        }
-      }
+      const isTarget = (absPath) => isAtOrUnder(absPath, absDir);
+      const targets = [...pending.keys()].filter(isTarget);
       for (const absPath of targets) {
         await flushPending(absPath);
       }
+      await Promise.all(inFlightTails(isTarget));
       return targets.length;
+    }
+    async function supersede(isTarget, op) {
+      const paused = /* @__PURE__ */ new Map();
+      const pause = (absPath, entry) => {
+        clearTimeout(entry.timer);
+        paused.set(absPath, entry);
+      };
+      for (const [absPath, entry] of pending) {
+        if (isTarget(absPath)) {
+          pause(absPath, entry);
+        }
+      }
+      await Promise.all(inFlightTails(isTarget));
+      for (const [absPath, entry] of pending) {
+        if (isTarget(absPath) && isRetry(entry) && !paused.has(absPath)) {
+          pause(absPath, entry);
+        }
+      }
+      const unchanged = () => [...paused].filter(([absPath, entry]) => pending.get(absPath) === entry);
+      let result;
+      try {
+        result = await op();
+      } catch (e) {
+        for (const [absPath] of unchanged()) {
+          scheduleFlush(absPath);
+        }
+        throw e;
+      }
+      for (const [absPath] of unchanged()) {
+        pending.delete(absPath);
+      }
+      return result;
+    }
+    function supersedePending(absPath, op) {
+      return supersede((p) => p === absPath, op);
+    }
+    function supersedePendingSubtree(absDir, op) {
+      return supersede((p) => isAtOrUnder(p, absDir), op);
     }
     async function flushAll2() {
       const paths = [...pending.keys()];
-      if (paths.length === 0) {
+      const writing = [...inFlight.values()].map(({ tail }) => tail);
+      if (paths.length === 0 && writing.length === 0) {
         return;
       }
-      console.log(`[write-coalesce] Flushing ${paths.length} pending write(s)...`);
+      console.log(
+        `[write-coalesce] Flushing ${paths.length} pending write(s), ${writing.length} in flight...`
+      );
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
       }
       const writes = paths.map((absPath) => {
         const entry = pending.get(absPath);
         pending.delete(absPath);
-        return writeToDisk(absPath, entry.data, entry.encoding).then(
+        return queueDiskWrite(absPath, entry).then(
           () => emitFlushSuccess(absPath),
           (err) => {
             console.error(`[write-coalesce] Failed to flush ${absPath}:`, err);
@@ -23805,13 +23833,14 @@ var require_write_coalescer = __commonJS({
           resolve();
         }, FLUSH_TIMEOUT_MS);
       });
-      await Promise.race([Promise.allSettled(writes), timeout]);
+      await Promise.race([Promise.allSettled([...writes, ...writing]), timeout]);
     }
     function _reset() {
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
       }
       pending.clear();
+      inFlight.clear();
       lastWriteTime.clear();
       giveUpSubs.clear();
       flushSuccessSubs.clear();
@@ -23822,10 +23851,10 @@ var require_write_coalescer = __commonJS({
       estimateSize,
       pendingBuffer,
       pendingPaths,
-      cancelPending,
       flushPending,
-      cancelPendingSubtree,
       flushPendingSubtree,
+      supersedePending,
+      supersedePendingSubtree,
       flushAll: flushAll2,
       onFlushGiveUp,
       onFlushSuccess,
@@ -30219,6 +30248,16 @@ var require_path_utils = __commonJS({
   }
 });
 
+// packages/server-core/src/file-times.js
+var require_file_times = __commonJS({
+  "packages/server-core/src/file-times.js"(exports2, module2) {
+    function creationTime(stat) {
+      return stat.birthtimeMs > 0 ? Math.min(stat.birthtimeMs, stat.mtimeMs) : stat.mtimeMs;
+    }
+    module2.exports = { creationTime };
+  }
+});
+
 // packages/server-core/src/watcher.js
 var require_watcher = __commonJS({
   "packages/server-core/src/watcher.js"(exports2, module2) {
@@ -30226,6 +30265,7 @@ var require_watcher = __commonJS({
     var path2 = require("path");
     var ignore = require_ignore();
     var { toVaultRel } = require_path_utils();
+    var { creationTime } = require_file_times();
     var DEFAULT_IGNORED_PATHS = [".git"];
     function compileIgnoreList(patterns) {
       const lines = patterns.map(
@@ -30336,7 +30376,7 @@ var require_watcher = __commonJS({
           event.stat = {
             size: stat.size,
             mtime: stat.mtimeMs,
-            ctime: stat.ctimeMs
+            ctime: creationTime(stat)
           };
         }
         for (const fn of entry.listeners) {
@@ -34511,6 +34551,7 @@ var require_src2 = __commonJS({
       fromVaultRel
     } = require_path_utils();
     var { sanitizeError } = require_errors();
+    var { creationTime } = require_file_times();
     module2.exports = {
       writeCoalescer: writeCoalescer2,
       watcher: watcher2,
@@ -34519,7 +34560,8 @@ var require_src2 = __commonJS({
       resolveVaultPath: resolveVaultPath2,
       toVaultRel,
       fromVaultRel,
-      sanitizeError
+      sanitizeError,
+      creationTime
     };
   }
 });
@@ -34583,6 +34625,11 @@ var require_config = __commonJS({
       return vaults2;
     }
     var vaults = discoverVaults();
+    var RESCAN_MIN_INTERVAL_MS = 1e3;
+    var lastRescanAt = 0;
+    function getVaultPath(id) {
+      return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
+    }
     module2.exports = {
       port: process.env.PORT || 8080,
       host: process.env.LISTEN_HOST || "127.0.0.1",
@@ -34594,8 +34641,15 @@ var require_config = __commonJS({
       get defaultVaultId() {
         return Object.keys(vaults)[0] || null;
       },
-      getVaultPath(id) {
-        return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
+      getVaultPath,
+      getVaultPathOrRescan(id, now = Date.now()) {
+        const known = getVaultPath(id);
+        if (known || !id || now - lastRescanAt < RESCAN_MIN_INTERVAL_MS) {
+          return known;
+        }
+        lastRescanAt = now;
+        vaults = discoverVaults();
+        return getVaultPath(id);
       },
       // { vaultId, relPath } or null
       vaultForPath(absPath) {
@@ -34615,12 +34669,6 @@ var require_config = __commonJS({
         vaults = discoverVaults();
         return vaults;
       },
-      demoMode: process.env.DEMO_MODE === "true",
-      demoMaxSessions: parseInt(process.env.DEMO_MAX_SESSIONS) || 20,
-      demoVaultsPerSession: parseInt(process.env.DEMO_VAULTS_PER_SESSION) || 3,
-      demoSessionQuotaBytes: parseInt(process.env.DEMO_SESSION_QUOTA_BYTES) || 700 * 1024,
-      demoTimeoutMs: parseInt(process.env.DEMO_TIMEOUT_MS) || 30 * 60 * 1e3,
-      demoTemplateDir: process.env.DEMO_TEMPLATE_DIR || path2.join(__dirname, "demo-template"),
       // 0 = disabled
       headlessSyncIdleRestartMs: parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
       devSuppressWriteFailures: process.env.DEV_SUPPRESS_WRITE_FAILURES === "true",
@@ -40740,12 +40788,6 @@ var require_index_html = __commonJS({
         "__OBSIDIAN_SCRIPTS__",
         JSON.stringify(scripts.map((s) => versionedSrc(s, obsidianVersion)))
       );
-      if (config2.demoMode) {
-        html = html.replace(
-          '<body class="theme-dark">',
-          '<body class="theme-dark" data-demo-mode="true">'
-        );
-      }
       cachedHtml = html;
       return cachedHtml;
     }
@@ -41355,48 +41397,6 @@ var require_ob_cli = __commonJS({
   }
 });
 
-// apps/ignis-server/server/routes/plugins.js
-var require_plugins = __commonJS({
-  "apps/ignis-server/server/routes/plugins.js"(exports2, module2) {
-    var express2 = require_express2();
-    var {
-      getDiscoveredPlugins,
-      enablePluginForVault,
-      disablePluginForVault
-    } = require_manager();
-    var { sanitizeError } = require_src2();
-    var router = express2.Router();
-    router.get("/", (req, res) => {
-      res.json(getDiscoveredPlugins());
-    });
-    router.post("/:pluginId/enable", async (req, res) => {
-      const vaultId = req.body?.vault;
-      if (!vaultId) {
-        return res.status(400).json({ error: "Missing vault ID" });
-      }
-      try {
-        await enablePluginForVault(req.params.pluginId, vaultId);
-        res.json({ ok: true });
-      } catch (e) {
-        res.status(400).json(sanitizeError(e));
-      }
-    });
-    router.post("/:pluginId/disable", async (req, res) => {
-      const vaultId = req.body?.vault;
-      if (!vaultId) {
-        return res.status(400).json({ error: "Missing vault ID" });
-      }
-      try {
-        await disablePluginForVault(req.params.pluginId, vaultId);
-        res.json({ ok: true });
-      } catch (e) {
-        res.status(400).json(sanitizeError(e));
-      }
-    });
-    module2.exports = router;
-  }
-});
-
 // apps/ignis-server/server/cache/state.js
 var require_state = __commonJS({
   "apps/ignis-server/server/cache/state.js"(exports2, module2) {
@@ -41481,13 +41481,14 @@ var require_tree_ops = __commonJS({
   "apps/ignis-server/server/cache/tree-ops.js"(exports2, module2) {
     var fs2 = require("fs");
     var fsp = fs2.promises;
-    var { fromVaultRel } = require_src2();
+    var { fromVaultRel, creationTime } = require_src2();
     function fileNode(s) {
       return {
         type: "file",
         size: s.size,
         mtime: s.mtimeMs,
-        ctime: s.ctimeMs
+        ctime: creationTime(s)
+        // Obsidian ctime is creation time, not POSIX inode ctime.
       };
     }
     async function statFileNode(absPath) {
@@ -41982,16 +41983,23 @@ var require_ignore_suggestions = __commonJS({
       }
       return patterns;
     }
+    function isLineCovered(line) {
+      const dir = line.replace(/\/\*$/, "");
+      return watcher2.isIgnoredPath(`${dir}/any-file`);
+    }
     function suggestionsForTree(tree, includeIgnored = false) {
       const suggestions = [];
       for (const [pluginDir, counts] of countPluginFiles(tree, includeIgnored)) {
         if (counts.total <= HEAVY_PLUGIN_FILES) {
           continue;
         }
+        const patterns = patternsFor(pluginDir, counts);
+        const ignoreLines = patterns.filter((pattern) => !pattern.startsWith("!"));
         suggestions.push({
           pluginDir,
           fileCount: counts.total,
-          patterns: patternsFor(pluginDir, counts)
+          patterns,
+          covered: ignoreLines.every((line) => isLineCovered(line))
         });
       }
       return suggestions.sort(
@@ -42032,7 +42040,8 @@ var require_crawl = __commonJS({
       watcher: watcher2,
       writeCoalescer: writeCoalescer2,
       toVaultRel,
-      fromVaultRel
+      fromVaultRel,
+      creationTime
     } = require_src2();
     var { getPending, pendingPaths, estimateSize } = writeCoalescer2;
     var {
@@ -42081,7 +42090,7 @@ var require_crawl = __commonJS({
                   type: "file",
                   size,
                   mtime: Date.now(),
-                  ctime: s ? s.ctimeMs : Date.now()
+                  ctime: s ? creationTime(s) : Date.now()
                 };
               } else {
                 tree[relPath] = fileNode(await fsp.stat(full));
@@ -42131,8 +42140,7 @@ var require_crawl = __commonJS({
         vaultList: buildVaultList(),
         tree,
         etag,
-        // In demo mode, hide server-side plugins from the client.
-        plugins: config2.demoMode ? [] : getDiscoveredPlugins(),
+        plugins: getDiscoveredPlugins(),
         virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),
         settings: {
           contentCacheBytes: settings2.get("contentCacheBytes"),
@@ -42420,867 +42428,48 @@ var require_cache = __commonJS({
   }
 });
 
-// apps/ignis-server/server/cache/reconcile.js
-var require_reconcile = __commonJS({
-  "apps/ignis-server/server/cache/reconcile.js"(exports2, module2) {
-    var { watcher: watcher2 } = require_src2();
-    var config2 = require_config();
-    var bootstrapCache2 = require_cache();
-    var RECONCILE_INTERVAL_MS = 30 * 60 * 1e3;
-    var RECENT_CRAWL_MS = 60 * 1e3;
-    var RECONCILE_RELEASE_MS = 300 * 1e3;
-    var timers = /* @__PURE__ */ new Map();
-    var queuedVaults = /* @__PURE__ */ new Set();
-    var runningReconcile = null;
-    var reconcilingVault = null;
-    function runReconcile(vaultId) {
-      let timer = null;
-      const released = new Promise((resolve) => {
-        timer = setTimeout(() => {
-          console.warn(
-            `[tree-reconcile] vault=${vaultId} reconcile has not completed in ${Math.round(RECONCILE_RELEASE_MS / 1e3)}s, resuming schedule`
-          );
-          resolve();
-        }, RECONCILE_RELEASE_MS);
-        timer.unref?.();
-      });
-      const work = Promise.resolve().then(() => bootstrapCache2.reconcileVault(vaultId)).catch((e) => {
-        if (config2.getVaultPath(vaultId)) {
-          console.warn(`[tree-reconcile] vault=${vaultId} failed:`, e.message);
-        }
-      }).finally(() => clearTimeout(timer));
-      return Promise.race([work, released]);
-    }
-    function pump() {
-      if (runningReconcile || queuedVaults.size === 0) {
-        return;
-      }
-      const vaultId = queuedVaults.values().next().value;
-      queuedVaults.delete(vaultId);
-      reconcilingVault = vaultId;
-      runningReconcile = runReconcile(vaultId).then(() => {
-        runningReconcile = null;
-        reconcilingVault = null;
-        pump();
-      });
-    }
-    function scheduleReconcile(vaultId) {
-      if (queuedVaults.has(vaultId) || reconcilingVault === vaultId) {
-        return;
-      }
-      queuedVaults.add(vaultId);
-      pump();
-    }
-    function scheduleUnlessRecent(vaultId) {
-      if (Date.now() - bootstrapCache2.lastCrawlAt(vaultId) < RECENT_CRAWL_MS) {
-        return;
-      }
-      scheduleReconcile(vaultId);
-    }
-    function tick(vaultId) {
-      if (!watcher2.isWatching(vaultId)) {
-        cancelVault(vaultId);
-        return;
-      }
-      scheduleUnlessRecent(vaultId);
-    }
-    function startSchedule(vaultId) {
-      scheduleUnlessRecent(vaultId);
-      if (timers.has(vaultId)) {
-        return;
-      }
-      const timer = setInterval(() => tick(vaultId), RECONCILE_INTERVAL_MS);
-      timer.unref?.();
-      timers.set(vaultId, timer);
-    }
-    function cancelVault(vaultId) {
-      clearInterval(timers.get(vaultId));
-      timers.delete(vaultId);
-      queuedVaults.delete(vaultId);
-    }
-    function _reset() {
-      for (const timer of timers.values()) {
-        clearInterval(timer);
-      }
-      timers.clear();
-      queuedVaults.clear();
-      runningReconcile = null;
-      reconcilingVault = null;
-    }
-    async function _drain() {
-      while (runningReconcile || queuedVaults.size > 0) {
-        pump();
-        await runningReconcile;
-      }
-    }
-    module2.exports = {
-      startSchedule,
-      scheduleReconcile,
-      cancelVault,
-      _reset,
-      _drain
-    };
-  }
-});
-
-// apps/ignis-server/server/demo/demo-sessions.js
-var require_demo_sessions = __commonJS({
-  "apps/ignis-server/server/demo/demo-sessions.js"(exports2, module2) {
-    var crypto = require("crypto");
-    var config2 = require_config();
-    var COOKIE_NAME = "ignis-demo";
-    var PREFIX_SEPARATOR = "__";
-    var sessions = /* @__PURE__ */ new Map();
-    function newSessionId() {
-      return crypto.randomBytes(12).toString("hex");
-    }
-    var SESSION_ID_RE = /^[a-f0-9]{24}$/;
-    function isValidSessionId(id) {
-      return typeof id === "string" && SESSION_ID_RE.test(id);
-    }
-    function prefixFor(sessionId) {
-      return "demo-" + sessionId + PREFIX_SEPARATOR;
-    }
-    function makeStorageName(sessionId, userVaultName) {
-      return prefixFor(sessionId) + userVaultName;
-    }
-    function tryParseUserVaultName(sessionId, storageName) {
-      const prefix = prefixFor(sessionId);
-      if (storageName && storageName.startsWith(prefix)) {
-        return storageName.slice(prefix.length);
-      }
-      return null;
-    }
-    function stripStoragePrefix(value, prefix) {
-      return typeof value === "string" ? value.replace(prefix, "") : value;
-    }
-    function isValidUserVaultName(name) {
-      return typeof name === "string" && name.length > 0 && name.length <= 64 && !name.includes(PREFIX_SEPARATOR) && !name.startsWith("demo-");
-    }
-    function parseCookies(req) {
-      const header = req.headers.cookie;
-      if (!header) {
-        return {};
-      }
-      const out = {};
-      for (const part of header.split(/;\s*/)) {
-        const eq = part.indexOf("=");
-        if (eq < 0) {
-          continue;
-        }
-        out[part.slice(0, eq)] = decodeURIComponent(part.slice(eq + 1));
-      }
-      return out;
-    }
-    function setSessionCookie(res, sessionId) {
-      const maxAgeSeconds = Math.floor(config2.demoTimeoutMs / 1e3);
-      res.setHeader(
-        "Set-Cookie",
-        `${COOKIE_NAME}=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSeconds}`
-      );
-    }
-    function getOrCreateSession(req, res, options = {}) {
-      const cookies = parseCookies(req);
-      const raw = cookies[COOKIE_NAME];
-      const existing = isValidSessionId(raw) ? raw : null;
-      if (existing && sessions.has(existing)) {
-        return existing;
-      }
-      if (existing && !sessions.has(existing)) {
-        if (sessions.size >= config2.demoMaxSessions) {
-          return null;
-        }
-        sessions.set(existing, {
-          lastActivity: Date.now(),
-          vaults: /* @__PURE__ */ new Set(),
-          bytesUsed: 0
-        });
-        return existing;
-      }
-      if (options.peek) {
-        return null;
-      }
-      if (sessions.size >= config2.demoMaxSessions) {
-        return null;
-      }
-      const sessionId = newSessionId();
-      sessions.set(sessionId, {
-        lastActivity: Date.now(),
-        vaults: /* @__PURE__ */ new Set(),
-        bytesUsed: 0
-      });
-      setSessionCookie(res, sessionId);
-      return sessionId;
-    }
-    function touchSession(sessionId) {
-      const s = sessions.get(sessionId);
-      if (s) {
-        s.lastActivity = Date.now();
-      }
-    }
-    module2.exports = {
-      COOKIE_NAME,
-      PREFIX_SEPARATOR,
-      sessions,
-      prefixFor,
-      makeStorageName,
-      tryParseUserVaultName,
-      isValidUserVaultName,
-      stripStoragePrefix,
-      parseCookies,
-      setSessionCookie,
-      getOrCreateSession,
-      touchSession
-    };
-  }
-});
-
-// apps/ignis-server/server/demo/demo-provision.js
-var require_demo_provision = __commonJS({
-  "apps/ignis-server/server/demo/demo-provision.js"(exports2, module2) {
-    var fs2 = require("fs");
-    var fsp = fs2.promises;
-    var path2 = require("path");
-    var config2 = require_config();
-    var bootstrapCache2 = require_cache();
-    var { sessions, makeStorageName } = require_demo_sessions();
-    var DEFAULT_VAULT_NAME = "Welcome";
-    async function dirSize(dir) {
-      let total = 0;
-      async function walk(d) {
-        let entries;
-        try {
-          entries = await fsp.readdir(d, { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const e of entries) {
-          const full = path2.join(d, e.name);
-          if (e.isDirectory()) {
-            await walk(full);
-          } else {
-            try {
-              const st = await fsp.stat(full);
-              total += st.size;
-            } catch {
-            }
-          }
-        }
-      }
-      await walk(dir);
-      return total;
-    }
-    async function recomputeBytes(sessionId) {
-      const s = sessions.get(sessionId);
-      if (!s) {
-        return 0;
-      }
-      let total = 0;
-      for (const userVaultName of s.vaults) {
-        const storageName = makeStorageName(sessionId, userVaultName);
-        const vaultPath = config2.getVaultPath(storageName);
-        if (vaultPath) {
-          total += await dirSize(vaultPath);
-        }
-      }
-      s.bytesUsed = total;
-      return total;
-    }
-    async function provisionVault(sessionId, userVaultName) {
-      const s = sessions.get(sessionId);
-      if (!s) {
-        return null;
-      }
-      if (s.vaults.size >= config2.demoVaultsPerSession) {
-        return { error: "vaults-per-session-limit" };
-      }
-      const storageName = makeStorageName(sessionId, userVaultName);
-      const vaultPath = path2.join(config2.vaultRoot, storageName);
-      const root = path2.resolve(config2.vaultRoot);
-      const resolved = path2.resolve(vaultPath);
-      if (resolved !== root && !resolved.startsWith(root + path2.sep)) {
-        return { error: "invalid-vault-name" };
-      }
-      await fsp.mkdir(config2.vaultRoot, { recursive: true });
-      try {
-        await fsp.mkdir(vaultPath, { recursive: false });
-      } catch (e) {
-        if (e.code === "EEXIST") {
-          return { error: "vault-exists" };
-        }
-        throw e;
-      }
-      await fsp.cp(config2.demoTemplateDir, vaultPath, { recursive: true });
-      config2.refreshVaults();
-      bootstrapCache2.invalidateVault(storageName);
-      s.vaults.add(userVaultName);
-      await recomputeBytes(sessionId);
-      return { storageName, userVaultName };
-    }
-    async function ensureDefaultVault(sessionId) {
-      const s = sessions.get(sessionId);
-      if (!s) {
-        return null;
-      }
-      const storageName = makeStorageName(sessionId, DEFAULT_VAULT_NAME);
-      const vaultPath = config2.getVaultPath(storageName);
-      const onDisk = vaultPath && fs2.existsSync(vaultPath);
-      if (s.vaults.has(DEFAULT_VAULT_NAME) && onDisk) {
-        return DEFAULT_VAULT_NAME;
-      }
-      if (onDisk) {
-        s.vaults.add(DEFAULT_VAULT_NAME);
-        return DEFAULT_VAULT_NAME;
-      }
-      s.vaults.delete(DEFAULT_VAULT_NAME);
-      const result = await provisionVault(sessionId, DEFAULT_VAULT_NAME);
-      if (result && result.userVaultName) {
-        return result.userVaultName;
-      }
-      return null;
-    }
-    module2.exports = {
-      DEFAULT_VAULT_NAME,
-      provisionVault,
-      ensureDefaultVault,
-      recomputeBytes
-    };
-  }
-});
-
-// apps/ignis-server/server/demo/demo-cleanup.js
-var require_demo_cleanup = __commonJS({
-  "apps/ignis-server/server/demo/demo-cleanup.js"(exports2, module2) {
-    var fs2 = require("fs");
-    var fsp = fs2.promises;
-    var path2 = require("path");
-    var config2 = require_config();
-    var { watcher: watcher2 } = require_src2();
-    var bootstrapCache2 = require_cache();
-    var treeReconcile2 = require_reconcile();
+// apps/ignis-server/server/routes/plugins.js
+var require_plugins = __commonJS({
+  "apps/ignis-server/server/routes/plugins.js"(exports2, module2) {
+    var express2 = require_express2();
     var {
-      sessions,
-      makeStorageName,
-      PREFIX_SEPARATOR
-    } = require_demo_sessions();
-    var { recomputeBytes } = require_demo_provision();
-    async function cleanupSession(sessionId) {
-      const s = sessions.get(sessionId);
-      if (!s) {
-        return;
-      }
-      for (const userVaultName of s.vaults) {
-        const storageName = makeStorageName(sessionId, userVaultName);
-        const vaultPath = config2.getVaultPath(storageName);
-        if (!vaultPath) {
-          continue;
-        }
-        try {
-          await watcher2.stopWatching(storageName);
-        } catch {
-        }
-        try {
-          await fsp.rm(vaultPath, { recursive: true, force: true });
-        } catch (e) {
-          console.warn(`[demo] Failed to remove ${storageName}:`, e.message);
-        }
-        treeReconcile2.cancelVault(storageName);
-        bootstrapCache2.invalidateVault(storageName);
-      }
-      config2.refreshVaults();
-      sessions.delete(sessionId);
-      console.log(`[demo] Cleaned up session ${sessionId}`);
-    }
-    async function cleanupExpired() {
-      const now = Date.now();
-      const expired = [];
-      for (const [sessionId, s] of sessions) {
-        if (now - s.lastActivity > config2.demoTimeoutMs) {
-          expired.push(sessionId);
-        }
-      }
-      for (const sessionId of expired) {
-        await cleanupSession(sessionId);
-      }
-      for (const sessionId of [...sessions.keys()]) {
-        await recomputeBytes(sessionId);
-      }
-      let entries;
-      try {
-        entries = await fsp.readdir(config2.vaultRoot, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory() || !entry.name.startsWith("demo-")) {
-          continue;
-        }
-        const idx = entry.name.indexOf(PREFIX_SEPARATOR);
-        if (idx < 0) {
-          continue;
-        }
-        const sessionId = entry.name.slice("demo-".length, idx);
-        if (!sessions.has(sessionId)) {
-          const orphanPath = path2.join(config2.vaultRoot, entry.name);
-          try {
-            await fsp.rm(orphanPath, { recursive: true, force: true });
-            treeReconcile2.cancelVault(entry.name);
-            bootstrapCache2.invalidateVault(entry.name);
-            console.log(`[demo] Removed orphan ${entry.name}`);
-          } catch {
-          }
-        }
-      }
-      config2.refreshVaults();
-    }
-    module2.exports = { cleanupSession, cleanupExpired };
-  }
-});
-
-// apps/ignis-server/server/demo/demo-middleware.js
-var require_demo_middleware = __commonJS({
-  "apps/ignis-server/server/demo/demo-middleware.js"(exports2, module2) {
-    var fs2 = require("fs");
-    var path2 = require("path");
-    var url = require("url");
-    var config2 = require_config();
-    var {
-      COOKIE_NAME,
-      sessions,
-      makeStorageName,
-      tryParseUserVaultName,
-      isValidUserVaultName,
-      stripStoragePrefix,
-      parseCookies,
-      setSessionCookie,
-      getOrCreateSession,
-      touchSession
-    } = require_demo_sessions();
-    var { ensureDefaultVault } = require_demo_provision();
+      getDiscoveredPlugins,
+      enablePluginForVault,
+      disablePluginForVault
+    } = require_manager();
     var { sanitizeError } = require_src2();
-    var ALLOWED_PROXY_HOSTS = /* @__PURE__ */ new Set([
-      "releases.obsidian.md",
-      "github.com",
-      "raw.githubusercontent.com",
-      "objects.githubusercontent.com",
-      "api.github.com",
-      "codeload.github.com"
-    ]);
-    function activityHeartbeat(req, res, next) {
-      const cookies = parseCookies(req);
-      const sessionId = cookies[COOKIE_NAME];
-      if (sessionId && sessions.has(sessionId)) {
-        touchSession(sessionId);
+    var bootstrapCache2 = require_cache();
+    var router = express2.Router();
+    router.get("/", (req, res) => {
+      res.json(getDiscoveredPlugins());
+    });
+    router.post("/:pluginId/enable", async (req, res) => {
+      const vaultId = req.body?.vault;
+      if (!vaultId) {
+        return res.status(400).json({ error: "Missing vault ID" });
       }
-      next();
-    }
-    function captureOriginalVaultName(req, res, next) {
-      if (req.query && req.query.vault) {
-        req._demoOriginalVault = req.query.vault;
-      }
-      if (req.body && req.body.vault) {
-        req._demoOriginalVault = req.body.vault;
-      }
-      next();
-    }
-    function inboundTranslator(req, res, next) {
-      const sessionId = getOrCreateSession(req, res, { peek: true });
-      if (!sessionId) {
-        return res.status(401).json({ error: "No demo session" });
-      }
-      touchSession(sessionId);
-      req._demoSessionId = sessionId;
-      if (req.query && req.query.vault) {
-        req.query.vault = makeStorageName(sessionId, req.query.vault);
-      }
-      if (req.body) {
-        if (req.body.vault) {
-          req.body.vault = makeStorageName(sessionId, req.body.vault);
-        }
-        if (req.body.name && (req.path === "/create" || req.path === "/rename")) {
-          if (!isValidUserVaultName(req.body.name)) {
-            return res.status(400).json({ error: "Invalid vault name" });
-          }
-          req.body.name = makeStorageName(sessionId, req.body.name);
-        }
-      }
-      next();
-    }
-    function rewriteVaultIdInPlace(obj, sessionId) {
-      if (!obj || typeof obj !== "object") {
-        return;
-      }
-      if (typeof obj.id === "string") {
-        const userName = tryParseUserVaultName(sessionId, obj.id);
-        if (userName !== null) {
-          obj.id = userName;
-          obj.name = userName;
-        }
-      }
-    }
-    function vaultFilesTranslator(req, res, next) {
-      const sessionId = getOrCreateSession(req, res, { peek: true });
-      if (!sessionId) {
-        return res.status(401).json({ error: "No demo session" });
-      }
-      const parts = req.url.split("/");
-      const vault = decodeURIComponent(parts[1] || "");
-      if (!vault) {
-        return next();
-      }
-      if (vault.startsWith("demo-")) {
-        if (tryParseUserVaultName(sessionId, vault) === null) {
-          return res.status(403).json({ error: "Vault not found" });
-        }
-        return next();
-      }
-      parts[1] = encodeURIComponent(makeStorageName(sessionId, vault));
-      req.url = parts.join("/");
-      next();
-    }
-    function outboundTranslator(req, res, next) {
-      const sessionId = req._demoSessionId;
-      if (!sessionId) {
-        return next();
-      }
-      const origJson = res.json.bind(res);
-      const prefix = "demo-" + sessionId + "__";
-      const stripPrefix = (s) => stripStoragePrefix(s, prefix);
-      res.json = function(body) {
-        if (Array.isArray(body)) {
-          const filtered = [];
-          for (const entry of body) {
-            const userName = tryParseUserVaultName(sessionId, entry.id);
-            if (userName !== null) {
-              filtered.push({
-                id: userName,
-                name: userName,
-                path: stripPrefix(entry.path)
-              });
-            }
-          }
-          return origJson(filtered);
-        }
-        if (body && typeof body === "object") {
-          rewriteVaultIdInPlace(body, sessionId);
-          rewriteVaultIdInPlace(body.vault, sessionId);
-          if (typeof body.path === "string") {
-            body.path = stripPrefix(body.path);
-          }
-          if (body.vault && typeof body.vault.path === "string") {
-            body.vault.path = stripPrefix(body.vault.path);
-          }
-          if (Array.isArray(body.vaultList)) {
-            body.vaultList = body.vaultList.map((v) => {
-              const userName = tryParseUserVaultName(sessionId, v.id);
-              if (userName === null) {
-                return null;
-              }
-              return {
-                id: userName,
-                name: userName,
-                path: stripPrefix(v.path)
-              };
-            }).filter(Boolean);
-          }
-        }
-        return origJson(body);
-      };
-      next();
-    }
-    function vaultsPerSessionEnforcer(req, res, next) {
-      if (req.path !== "/create" || req.method !== "POST") {
-        return next();
-      }
-      const sessionId = req._demoSessionId;
-      if (!sessionId) {
-        return next();
-      }
-      const s = sessions.get(sessionId);
-      if (s && s.vaults.size >= config2.demoVaultsPerSession) {
-        return res.status(507).json({
-          error: `Demo limit: max ${config2.demoVaultsPerSession} vaults per session`
-        });
-      }
-      next();
-    }
-    function quotaEnforcer(req, res, next) {
-      if (req.method !== "POST" || req.path !== "/writeFile" && req.path !== "/appendFile") {
-        return next();
-      }
-      const sessionId = req._demoSessionId;
-      if (!sessionId) {
-        return next();
-      }
-      const s = sessions.get(sessionId);
-      if (!s) {
-        return next();
-      }
-      const content = req.body && req.body.content;
-      let size = 0;
-      if (typeof content === "string") {
-        size = req.body.base64 ? Math.floor(content.length * 3 / 4) : Buffer.byteLength(content, "utf-8");
-      }
-      if (s.bytesUsed + size > config2.demoSessionQuotaBytes) {
-        return res.status(507).json({
-          error: `Demo quota exceeded (${config2.demoSessionQuotaBytes} bytes per session)`
-        });
-      }
-      s.bytesUsed += size;
-      next();
-    }
-    function proxyAllowlist(req, res, next) {
-      const target = req.body && req.body.url;
-      if (!target) {
-        return next();
-      }
-      let host;
       try {
-        host = new url.URL(target).hostname;
-      } catch {
-        return res.status(400).json({ error: "Invalid URL" });
+        await enablePluginForVault(req.params.pluginId, vaultId);
+        bootstrapCache2.invalidateVault(vaultId);
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(400).json(sanitizeError(e));
       }
-      if (!ALLOWED_PROXY_HOSTS.has(host)) {
-        return res.status(403).json({ error: `Domain not allowed in demo mode: ${host}` });
+    });
+    router.post("/:pluginId/disable", async (req, res) => {
+      const vaultId = req.body?.vault;
+      if (!vaultId) {
+        return res.status(400).json({ error: "Missing vault ID" });
       }
-      next();
-    }
-    function trackVaultLifecycle(req, res, next) {
-      const sessionId = req._demoSessionId;
-      if (!sessionId) {
-        return next();
+      try {
+        await disablePluginForVault(req.params.pluginId, vaultId);
+        bootstrapCache2.invalidateVault(vaultId);
+        res.json({ ok: true });
+      } catch (e) {
+        res.status(400).json(sanitizeError(e));
       }
-      const origJson = res.json.bind(res);
-      res.json = function(body) {
-        const isOk = res.statusCode < 400 && body && typeof body === "object" && body.ok;
-        if (isOk) {
-          const s = sessions.get(sessionId);
-          if (s) {
-            if (req.path === "/create" && body.id) {
-              const userName = tryParseUserVaultName(sessionId, body.id);
-              if (userName !== null) {
-                s.vaults.add(userName);
-              } else {
-                console.warn(
-                  "[demo] trackVaultLifecycle: could not parse user name from create response id:",
-                  body.id
-                );
-              }
-            } else if (req.path === "/rename") {
-              const oldName = req._demoOriginalVault;
-              if (oldName) {
-                s.vaults.delete(oldName);
-              }
-              if (body.id) {
-                const userName = tryParseUserVaultName(sessionId, body.id);
-                if (userName !== null) {
-                  s.vaults.add(userName);
-                } else {
-                  console.warn(
-                    "[demo] trackVaultLifecycle: could not parse user name from rename response id:",
-                    body.id
-                  );
-                }
-              }
-            } else if (req.method === "DELETE" && req.path === "/remove") {
-              const removed = req._demoOriginalVault;
-              if (removed) {
-                s.vaults.delete(removed);
-              }
-            }
-          }
-        }
-        return origJson(body);
-      };
-      next();
-    }
-    function pluginsBlocker(req, res, next) {
-      if (req.method === "GET") {
-        return res.json([]);
-      }
-      return res.status(403).json({ error: "Server plugins are disabled in demo mode" });
-    }
-    var CAPACITY_HTML = fs2.readFileSync(
-      path2.join(__dirname, "demo-capacity.html"),
-      "utf-8"
-    );
-    function pageLoadHandler(req, res, next) {
-      if (req.path !== "/" && req.path !== "/index.html") {
-        return next();
-      }
-      const cookies = parseCookies(req);
-      let sessionId = cookies[COOKIE_NAME];
-      let session = sessionId && sessions.has(sessionId) ? sessions.get(sessionId) : null;
-      if (!session) {
-        if (sessions.size >= config2.demoMaxSessions) {
-          res.status(503).type("html").send(CAPACITY_HTML);
-          return;
-        }
-        sessionId = getOrCreateSession(req, res);
-        session = sessionId ? sessions.get(sessionId) : null;
-      } else {
-        setSessionCookie(res, sessionId);
-      }
-      const requestedVault = req.query?.vault;
-      if (requestedVault && session) {
-        const storageName = makeStorageName(sessionId, requestedVault);
-        const vaultPath = config2.getVaultPath(storageName);
-        const stillExists = session.vaults.has(requestedVault) && vaultPath && fs2.existsSync(vaultPath);
-        if (!stillExists) {
-          return res.redirect(302, "/");
-        }
-      }
-      next();
-    }
-    function provisionEndpoint(req, res) {
-      const sessionId = getOrCreateSession(req, res);
-      if (!sessionId) {
-        return res.status(503).json({ error: "Demo at capacity" });
-      }
-      ensureDefaultVault(sessionId).then((userVaultName) => {
-        if (!userVaultName) {
-          return res.status(500).json({ error: "Provisioning failed" });
-        }
-        res.json({ vault: userVaultName });
-      }).catch((e) => {
-        console.error("[demo] provision error:", e);
-        res.status(500).json(sanitizeError(e));
-      });
-    }
-    module2.exports = {
-      activityHeartbeat,
-      captureOriginalVaultName,
-      inboundTranslator,
-      outboundTranslator,
-      vaultFilesTranslator,
-      vaultsPerSessionEnforcer,
-      quotaEnforcer,
-      proxyAllowlist,
-      trackVaultLifecycle,
-      pluginsBlocker,
-      pageLoadHandler,
-      provisionEndpoint
-    };
-  }
-});
-
-// apps/ignis-server/server/demo/demo-ws.js
-var require_demo_ws = __commonJS({
-  "apps/ignis-server/server/demo/demo-ws.js"(exports2, module2) {
-    var url = require("url");
-    var {
-      COOKIE_NAME,
-      sessions,
-      parseCookies,
-      makeStorageName,
-      tryParseUserVaultName,
-      touchSession
-    } = require_demo_sessions();
-    function wireWebSocket(server2) {
-      const origEmit = server2.emit.bind(server2);
-      server2.emit = function(event, req, ...rest) {
-        if (event === "upgrade") {
-          const cookies = parseCookies(req);
-          const sessionId = cookies[COOKIE_NAME];
-          if (sessionId && sessions.has(sessionId)) {
-            const u = new url.URL(req.url, "http://localhost");
-            const userVault = u.searchParams.get("vault");
-            if (userVault && !userVault.startsWith("demo-")) {
-              u.searchParams.set("vault", makeStorageName(sessionId, userVault));
-              req.url = u.pathname + u.search;
-            } else if (userVault && userVault.startsWith("demo-") && tryParseUserVaultName(sessionId, userVault) === null) {
-              const socket = rest[0];
-              if (socket && socket.writable) {
-                socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-                socket.destroy();
-              }
-              return;
-            }
-            touchSession(sessionId);
-          } else {
-            const socket = rest[0];
-            if (socket && socket.writable) {
-              socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-              socket.destroy();
-            }
-            return;
-          }
-        }
-        return origEmit(event, req, ...rest);
-      };
-    }
-    module2.exports = { wireWebSocket };
-  }
-});
-
-// apps/ignis-server/server/demo/index.js
-var require_demo = __commonJS({
-  "apps/ignis-server/server/demo/index.js"(exports2, module2) {
-    var config2 = require_config();
-    var { cleanupExpired } = require_demo_cleanup();
-    var {
-      activityHeartbeat,
-      captureOriginalVaultName,
-      inboundTranslator,
-      outboundTranslator,
-      vaultFilesTranslator,
-      vaultsPerSessionEnforcer,
-      quotaEnforcer,
-      proxyAllowlist,
-      trackVaultLifecycle,
-      pluginsBlocker,
-      pageLoadHandler,
-      provisionEndpoint
-    } = require_demo_middleware();
-    var { wireWebSocket } = require_demo_ws();
-    function setupDemo2(app2) {
-      if (!config2.demoMode) {
-        return;
-      }
-      console.log("[demo] Demo mode enabled");
-      console.log(`[demo] Max sessions: ${config2.demoMaxSessions}`);
-      console.log(`[demo] Vaults per session: ${config2.demoVaultsPerSession}`);
-      console.log(
-        `[demo] Quota per session: ${config2.demoSessionQuotaBytes} bytes`
-      );
-      console.log(`[demo] Inactivity timeout: ${config2.demoTimeoutMs} ms`);
-      app2.use(pageLoadHandler);
-      app2.use(activityHeartbeat);
-      app2.get("/api/demo/provision", provisionEndpoint);
-      app2.use(
-        ["/api/vault", "/api/fs", "/api/bootstrap"],
-        captureOriginalVaultName
-      );
-      app2.use(["/api/vault", "/api/fs", "/api/bootstrap"], inboundTranslator);
-      app2.use(["/api/vault", "/api/fs", "/api/bootstrap"], outboundTranslator);
-      app2.use("/vault-files", vaultFilesTranslator);
-      app2.use("/api/vault", vaultsPerSessionEnforcer);
-      app2.use("/api/fs", quotaEnforcer);
-      app2.use("/api/vault", trackVaultLifecycle);
-      app2.use("/api/proxy", proxyAllowlist);
-      app2.use("/api/plugins", pluginsBlocker);
-      app2.use("/api/ext", (req, res) => {
-        res.status(403).json({ error: "Plugin routes are disabled in demo mode" });
-      });
-      app2.use("/api/settings", (req, res) => {
-        res.status(403).json({ error: "Settings are disabled in demo mode" });
-      });
-      const interval = setInterval(() => {
-        cleanupExpired().catch(
-          (e) => console.warn("[demo] Cleanup error:", e.message)
-        );
-      }, 60 * 1e3);
-      if (interval.unref) {
-        interval.unref();
-      }
-    }
-    function wireDemoWebSocket2(server2) {
-      if (!config2.demoMode) {
-        return;
-      }
-      wireWebSocket(server2);
-    }
-    module2.exports = { setupDemo: setupDemo2, wireDemoWebSocket: wireDemoWebSocket2 };
+    });
+    module2.exports = router;
   }
 });
 
@@ -69466,17 +68655,18 @@ var require_fs = __commonJS({
       encodeContentDispositionFilename,
       resolveVaultPath: resolveVaultPath2,
       toVaultRel,
-      sanitizeError
+      sanitizeError,
+      creationTime
     } = require_src2();
     var {
       writeCoalesced,
       getPending,
       estimateSize,
       pendingBuffer,
-      cancelPending,
       flushPending,
-      cancelPendingSubtree,
-      flushPendingSubtree
+      flushPendingSubtree,
+      supersedePending,
+      supersedePendingSubtree
     } = writeCoalescer2;
     var bootstrapCache2 = require_cache();
     var router = express2.Router();
@@ -69539,7 +68729,7 @@ var require_fs = __commonJS({
         stat: {
           size: result.size,
           mtime: result.mtime,
-          ctime: diskStat ? diskStat.ctimeMs : result.mtime
+          ctime: diskStat ? creationTime(diskStat) : result.mtime
         }
       };
     }
@@ -69575,7 +68765,7 @@ var require_fs = __commonJS({
             type: "file",
             size,
             mtime: Date.now(),
-            ctime: diskStat ? diskStat.ctimeMs : Date.now()
+            ctime: diskStat ? creationTime(diskStat) : Date.now()
           });
           return;
         }
@@ -69584,7 +68774,7 @@ var require_fs = __commonJS({
           type: stat.isDirectory() ? "directory" : "file",
           size: stat.size,
           mtime: stat.mtimeMs,
-          ctime: stat.ctimeMs
+          ctime: creationTime(stat)
         });
       } catch (e) {
         res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));
@@ -69671,10 +68861,10 @@ var require_fs = __commonJS({
         return;
       }
       try {
-        await fs2.promises.mkdir(resolved, {
-          recursive: !!req.body.recursive
-        });
-        cancelPending(resolved);
+        await supersedePending(
+          resolved,
+          () => fs2.promises.mkdir(resolved, { recursive: !!req.body.recursive })
+        );
         const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
         applyToTree(req, { type: "folder-created", path: rel });
@@ -69697,8 +68887,10 @@ var require_fs = __commonJS({
       }
       try {
         await flushPendingSubtree(oldResolved);
-        await fs2.promises.rename(oldResolved, newResolved);
-        cancelPending(newResolved);
+        await supersedePending(
+          newResolved,
+          () => fs2.promises.rename(oldResolved, newResolved)
+        );
         res.json({ ok: true });
         applyToTree(
           req,
@@ -69727,8 +68919,10 @@ var require_fs = __commonJS({
       }
       try {
         await flushPending(srcResolved);
-        await fs2.promises.copyFile(srcResolved, destResolved);
-        cancelPending(destResolved);
+        await supersedePending(
+          destResolved,
+          () => fs2.promises.copyFile(srcResolved, destResolved)
+        );
         res.json({ ok: true });
         applyToTree(req, {
           type: "modified",
@@ -69745,18 +68939,18 @@ var require_fs = __commonJS({
       }
       const rel = toRelative(req._vaultRoot, resolved);
       try {
-        await fs2.promises.unlink(resolved);
-        cancelPending(resolved);
+        await supersedePending(
+          resolved,
+          () => fs2.promises.unlink(resolved).catch((e) => {
+            if (e.code !== "ENOENT") {
+              throw e;
+            }
+          })
+        );
         res.json({ ok: true });
         applyToTree(req, { type: "deleted", path: rel });
       } catch (e) {
-        if (e.code === "ENOENT") {
-          cancelPending(resolved);
-          res.json({ ok: true });
-          applyToTree(req, { type: "deleted", path: rel });
-        } else {
-          res.status(500).json(sanitizeError(e));
-        }
+        res.status(500).json(sanitizeError(e));
       }
     });
     router.delete("/rmdir", async (req, res) => {
@@ -69765,8 +68959,7 @@ var require_fs = __commonJS({
         return;
       }
       try {
-        await fs2.promises.rmdir(resolved);
-        cancelPendingSubtree(resolved);
+        await supersedePendingSubtree(resolved, () => fs2.promises.rmdir(resolved));
         const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
         applyToTree(req, { type: "deleted", path: rel });
@@ -69780,12 +68973,12 @@ var require_fs = __commonJS({
         return;
       }
       try {
-        await fs2.promises.rm(resolved, {
-          recursive: req.query.recursive === "true"
-        });
-        cancelPending(resolved);
-        if (req.query.recursive === "true") {
-          cancelPendingSubtree(resolved);
+        const recursive = req.query.recursive === "true";
+        const remove = () => fs2.promises.rm(resolved, { recursive });
+        if (recursive) {
+          await supersedePendingSubtree(resolved, remove);
+        } else {
+          await supersedePending(resolved, remove);
         }
         const rel = toRelative(req._vaultRoot, resolved);
         res.json({ ok: true });
@@ -69812,16 +69005,30 @@ var require_fs = __commonJS({
         return;
       }
       try {
+        await flushPending(resolved);
         await fs2.promises.utimes(
           resolved,
           req.body.atime / 1e3,
           req.body.mtime / 1e3
         );
-        const rel = toRelative(req._vaultRoot, resolved);
-        res.json({ ok: true });
-        applyToTree(req, { type: "modified", path: rel });
+        const stat = await fs2.promises.stat(resolved);
+        if (stat.isDirectory()) {
+          res.json({ type: "directory" });
+          return;
+        }
+        const times = {
+          size: stat.size,
+          mtime: stat.mtimeMs,
+          ctime: creationTime(stat)
+        };
+        res.json({ type: "file", ...times });
+        applyToTree(req, {
+          type: "modified",
+          path: toRelative(req._vaultRoot, resolved),
+          stat: times
+        });
       } catch (e) {
-        res.status(500).json(sanitizeError(e));
+        res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));
       }
     });
     router.post("/batch-read", async (req, res) => {
@@ -69875,9 +69082,6 @@ var require_fs = __commonJS({
         res.setHeader("ETag", entry.etag);
         if (req.headers["if-none-match"] === entry.etag) {
           return res.status(304).end();
-        }
-        if (req._demoSessionId) {
-          return res.json(JSON.parse(JSON.stringify(entry.response.tree)));
         }
         res.json(entry.response.tree);
       } catch (e) {
@@ -69947,6 +69151,109 @@ var require_fs = __commonJS({
       }
     });
     module2.exports = router;
+  }
+});
+
+// apps/ignis-server/server/cache/reconcile.js
+var require_reconcile = __commonJS({
+  "apps/ignis-server/server/cache/reconcile.js"(exports2, module2) {
+    var { watcher: watcher2 } = require_src2();
+    var config2 = require_config();
+    var bootstrapCache2 = require_cache();
+    var RECONCILE_INTERVAL_MS = 30 * 60 * 1e3;
+    var RECENT_CRAWL_MS = 60 * 1e3;
+    var RECONCILE_RELEASE_MS = 300 * 1e3;
+    var timers = /* @__PURE__ */ new Map();
+    var queuedVaults = /* @__PURE__ */ new Set();
+    var runningReconcile = null;
+    var reconcilingVault = null;
+    function runReconcile(vaultId) {
+      let timer = null;
+      const released = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(
+            `[tree-reconcile] vault=${vaultId} reconcile has not completed in ${Math.round(RECONCILE_RELEASE_MS / 1e3)}s, resuming schedule`
+          );
+          resolve();
+        }, RECONCILE_RELEASE_MS);
+        timer.unref?.();
+      });
+      const work = Promise.resolve().then(() => bootstrapCache2.reconcileVault(vaultId)).catch((e) => {
+        if (config2.getVaultPath(vaultId)) {
+          console.warn(`[tree-reconcile] vault=${vaultId} failed:`, e.message);
+        }
+      }).finally(() => clearTimeout(timer));
+      return Promise.race([work, released]);
+    }
+    function pump() {
+      if (runningReconcile || queuedVaults.size === 0) {
+        return;
+      }
+      const vaultId = queuedVaults.values().next().value;
+      queuedVaults.delete(vaultId);
+      reconcilingVault = vaultId;
+      runningReconcile = runReconcile(vaultId).then(() => {
+        runningReconcile = null;
+        reconcilingVault = null;
+        pump();
+      });
+    }
+    function scheduleReconcile(vaultId) {
+      if (queuedVaults.has(vaultId) || reconcilingVault === vaultId) {
+        return;
+      }
+      queuedVaults.add(vaultId);
+      pump();
+    }
+    function scheduleUnlessRecent(vaultId) {
+      if (Date.now() - bootstrapCache2.lastCrawlAt(vaultId) < RECENT_CRAWL_MS) {
+        return;
+      }
+      scheduleReconcile(vaultId);
+    }
+    function tick(vaultId) {
+      if (!watcher2.isWatching(vaultId)) {
+        cancelVault(vaultId);
+        return;
+      }
+      scheduleUnlessRecent(vaultId);
+    }
+    function startSchedule(vaultId) {
+      scheduleUnlessRecent(vaultId);
+      if (timers.has(vaultId)) {
+        return;
+      }
+      const timer = setInterval(() => tick(vaultId), RECONCILE_INTERVAL_MS);
+      timer.unref?.();
+      timers.set(vaultId, timer);
+    }
+    function cancelVault(vaultId) {
+      clearInterval(timers.get(vaultId));
+      timers.delete(vaultId);
+      queuedVaults.delete(vaultId);
+    }
+    function _reset() {
+      for (const timer of timers.values()) {
+        clearInterval(timer);
+      }
+      timers.clear();
+      queuedVaults.clear();
+      runningReconcile = null;
+      reconcilingVault = null;
+    }
+    async function _drain() {
+      while (runningReconcile || queuedVaults.size > 0) {
+        pump();
+        await runningReconcile;
+      }
+    }
+    module2.exports = {
+      startSchedule,
+      scheduleReconcile,
+      cancelVault,
+      _reset,
+      _drain
+    };
   }
 });
 
@@ -70026,7 +69333,7 @@ var require_vault = __commonJS({
     });
     router.get("/info", async (req, res) => {
       const vaultId = req.query.vault || config2.defaultVaultId;
-      const vaultPath = config2.getVaultPath(vaultId);
+      const vaultPath = config2.getVaultPathOrRescan(vaultId);
       if (!vaultPath) {
         return res.status(404).json({ error: "Vault not found", id: vaultId });
       }
@@ -70895,13 +70202,34 @@ var require_settings2 = __commonJS({
       const previous = settings2.getAll();
       const effective = settings2.update(clean);
       await applySettings(effective, previous);
-      if (Object.keys(clean).length > 0) {
-        bootstrapCache2.invalidateAll();
-      }
-      res.json(effective);
+      const ignoreSuggestions = bootstrapCache2.ignoreSuggestions();
+      invalidateBootstrap(clean, previous, effective);
+      res.json({ ...effective, ignoreSuggestions });
     });
+    function invalidateBootstrap(clean, previous, effective) {
+      const keys = Object.keys(clean);
+      if (keys.length === 0) {
+        return;
+      }
+      if (keys.length === 1 && keys[0] === "trustedVaults") {
+        for (const id of trustChanges(
+          previous.trustedVaults,
+          effective.trustedVaults
+        )) {
+          bootstrapCache2.invalidateVault(id);
+        }
+        return;
+      }
+      bootstrapCache2.invalidateAll();
+    }
+    function trustChanges(before, after) {
+      const was = new Set(before || []);
+      const now = new Set(after || []);
+      return [...was, ...now].filter((id) => was.has(id) !== now.has(id));
+    }
     module2.exports = router;
     module2.exports.validate = validate;
+    module2.exports.trustChanges = trustChanges;
   }
 });
 
@@ -70915,7 +70243,7 @@ var require_bootstrap = __commonJS({
     var router = express2.Router();
     router.get("/", async (req, res) => {
       const vaultId = req.query.vault || config2.defaultVaultId;
-      if (!vaultId || !config2.getVaultPath(vaultId)) {
+      if (!vaultId || !config2.getVaultPathOrRescan(vaultId)) {
         return res.status(404).json({ error: "Vault not found", id: vaultId });
       }
       try {
@@ -70924,9 +70252,6 @@ var require_bootstrap = __commonJS({
           return res.status(404).json({ error: "Vault not found" });
         }
         res.setHeader("Cache-Control", "no-store");
-        if (req._demoSessionId) {
-          return res.json(JSON.parse(JSON.stringify(entry.response)));
-        }
         const ae = req.headers["accept-encoding"] || "";
         const compressed = await getOrCompress(entry);
         let buf, encoding;
@@ -71075,32 +70400,224 @@ var require_listeners = __commonJS({
   }
 });
 
+// apps/ignis-server/server/tls-cert.js
+var require_tls_cert = __commonJS({
+  "apps/ignis-server/server/tls-cert.js"(exports2, module2) {
+    var crypto = require("crypto");
+    var fs2 = require("fs");
+    var path2 = require("path");
+    var VALID_DAYS = 825;
+    var RENEW_BEFORE_MS = 30 * 24 * 3600 * 1e3;
+    var MAX_IPS = 8;
+    function len(n) {
+      if (n < 128)
+        return Buffer.from([n]);
+      const bytes = [];
+      for (let v = n; v > 0; v = Math.floor(v / 256))
+        bytes.unshift(v & 255);
+      return Buffer.from([128 | bytes.length, ...bytes]);
+    }
+    function tlv(tag, ...parts) {
+      const body = Buffer.concat(parts);
+      return Buffer.concat([Buffer.from([tag]), len(body.length), body]);
+    }
+    var seq = (...p) => tlv(48, ...p);
+    var set = (...p) => tlv(49, ...p);
+    var oid = (dotted) => {
+      const a = dotted.split(".").map(Number);
+      const out = [a[0] * 40 + a[1]];
+      for (const v of a.slice(2)) {
+        const chunk = [v & 127];
+        for (let x = v >>> 7; x > 0; x >>>= 7)
+          chunk.unshift(x & 127 | 128);
+        out.push(...chunk);
+      }
+      return tlv(6, Buffer.from(out));
+    };
+    var utf8 = (s) => tlv(12, Buffer.from(s, "utf8"));
+    var octets = (b) => tlv(4, b);
+    var bitString = (b) => tlv(3, Buffer.from([0]), b);
+    var integer = (buf) => {
+      let b = buf;
+      while (b.length > 1 && b[0] === 0 && !(b[1] & 128))
+        b = b.subarray(1);
+      if (b[0] & 128)
+        b = Buffer.concat([Buffer.from([0]), b]);
+      return tlv(2, b);
+    };
+    function utcTime(d) {
+      const p = (n) => String(n).padStart(2, "0");
+      const s = p(d.getUTCFullYear() % 100) + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) + p(d.getUTCHours()) + p(d.getUTCMinutes()) + p(d.getUTCSeconds()) + "Z";
+      return tlv(23, Buffer.from(s, "ascii"));
+    }
+    function ipv4Bytes(ip) {
+      return Buffer.from(ip.split(".").map(Number));
+    }
+    var IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
+    function isIPv4(s) {
+      return typeof s === "string" && IPV4_RE.test(s);
+    }
+    function buildCertificate(privateKey, publicKey, ips, now = /* @__PURE__ */ new Date()) {
+      const algId = seq(oid("1.2.840.10045.4.3.2"));
+      const name = seq(set(seq(oid("2.5.4.3"), utf8("Vitreus LAN Server"))));
+      const notBefore = new Date(now.getTime() - 24 * 3600 * 1e3);
+      const notAfter = new Date(now.getTime() + VALID_DAYS * 24 * 3600 * 1e3);
+      const san = seq(
+        tlv(130, Buffer.from("localhost", "ascii")),
+        ...ips.map((ip) => tlv(135, ipv4Bytes(ip)))
+        // iPAddress
+      );
+      const ext = (id, critical, value) => seq(oid(id), ...critical ? [tlv(1, Buffer.from([255]))] : [], octets(value));
+      const extensions = tlv(
+        163,
+        seq(
+          ext("2.5.29.19", true, seq()),
+          // basicConstraints: CA=false
+          ext("2.5.29.15", true, tlv(3, Buffer.from([7, 128]))),
+          // keyUsage: digitalSignature
+          ext("2.5.29.37", false, seq(oid("1.3.6.1.5.5.7.3.1"))),
+          // extKeyUsage: serverAuth
+          ext("2.5.29.17", false, san)
+        )
+      );
+      const serial = crypto.randomBytes(16);
+      serial[0] &= 127;
+      const tbs = seq(
+        tlv(160, tlv(2, Buffer.from([2]))),
+        // version v3
+        integer(serial),
+        algId,
+        name,
+        seq(utcTime(notBefore), utcTime(notAfter)),
+        name,
+        publicKey.export({ type: "spki", format: "der" }),
+        extensions
+      );
+      const sig = crypto.sign("sha256", tbs, privateKey);
+      return seq(tbs, algId, bitString(sig));
+    }
+    function toPem(der, label) {
+      const b64 = der.toString("base64").match(/.{1,64}/g).join("\n");
+      return `-----BEGIN ${label}-----
+${b64}
+-----END ${label}-----
+`;
+    }
+    function generate(ips) {
+      const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+      const der = buildCertificate(privateKey, publicKey, ips);
+      return {
+        key: privateKey.export({ type: "pkcs8", format: "pem" }),
+        cert: toPem(der, "CERTIFICATE")
+      };
+    }
+    function localIps() {
+      try {
+        const out = [];
+        for (const list of Object.values(require("os").networkInterfaces() || {})) {
+          for (const i of list || []) {
+            if (i.family === "IPv4" && !i.internal && isIPv4(i.address))
+              out.push(i.address);
+          }
+        }
+        return out;
+      } catch (e) {
+        return [];
+      }
+    }
+    function sanIps(certPem) {
+      try {
+        const x = new crypto.X509Certificate(certPem);
+        return (x.subjectAltName || "").split(",").map((s) => s.trim()).filter((s) => s.startsWith("IP Address:")).map((s) => s.slice("IP Address:".length));
+      } catch (e) {
+        return [];
+      }
+    }
+    function describe(certPem) {
+      const x = new crypto.X509Certificate(certPem);
+      return {
+        fingerprint: x.fingerprint256,
+        // AA:BB:...
+        validTo: new Date(x.validTo).getTime(),
+        ips: sanIps(certPem)
+      };
+    }
+    function ensure(dataRoot, wantedIps = []) {
+      const dir = path2.join(dataRoot, "lan-tls");
+      const keyFile = path2.join(dir, "key.pem");
+      const certFile = path2.join(dir, "cert.pem");
+      const want = [...new Set([...wantedIps, ...localIps()].filter(isIPv4))];
+      let key = null;
+      let cert = null;
+      try {
+        key = fs2.readFileSync(keyFile, "utf8");
+        cert = fs2.readFileSync(certFile, "utf8");
+      } catch (e) {
+        key = cert = null;
+      }
+      let info = null;
+      let existingIps = [];
+      if (cert && key) {
+        try {
+          info = describe(cert);
+          existingIps = info.ips;
+          crypto.createPrivateKey(key);
+        } catch (e) {
+          info = null;
+        }
+      }
+      const covered = want.every((ip) => existingIps.includes(ip));
+      if (!info || !covered || info.validTo - Date.now() < RENEW_BEFORE_MS) {
+        const merged = [.../* @__PURE__ */ new Set([...want, ...existingIps])].slice(0, MAX_IPS);
+        const fresh = generate(merged);
+        fs2.mkdirSync(dir, { recursive: true });
+        fs2.writeFileSync(keyFile, fresh.key, { mode: 384 });
+        fs2.writeFileSync(certFile, fresh.cert);
+        key = fresh.key;
+        cert = fresh.cert;
+        info = describe(cert);
+        console.log(`[lan-tls] generated self-signed cert, SAN ips=${info.ips.join(",") || "-"}`);
+      }
+      return { key, cert, fingerprint: info.fingerprint, validTo: info.validTo, ips: info.ips };
+    }
+    module2.exports = { ensure, generate, buildCertificate, isIPv4, describe };
+  }
+});
+
 // apps/ignis-server/server/lan-share.js
 var require_lan_share = __commonJS({
   "apps/ignis-server/server/lan-share.js"(exports2, module2) {
     var url = require("url");
+    var https = require("https");
+    var config2 = require_config();
     var digestAuth = require_digest_auth();
+    var tlsCert = require_tls_cert();
     var state = {
       server: null,
-      // http.Server | null
+      // http.Server | https.Server | null
       port: 0,
-      since: 0
+      since: 0,
+      tls: false,
+      fingerprint: ""
+      // 自签证书 SHA-256 指纹（TLS 开启时，供用户首次放行时比对）
     };
     function status() {
       return {
         running: !!state.server,
         port: state.port,
         since: state.since,
-        user: digestAuth.getCredentials()?.user || ""
+        user: digestAuth.getCredentials()?.user || "",
+        tls: state.tls,
+        fingerprint: state.fingerprint
       };
     }
     function pickPort() {
       return 3e4 + Math.floor(Math.random() * 3e4);
     }
-    function listenOn(app2, port, wss2) {
+    function listenOn(app2, port, tlsOpts) {
       return new Promise((resolve, reject) => {
         const tryPort = (p, attemptsLeft) => {
-          const srv = app2.listen(p, "0.0.0.0");
+          const srv = tlsOpts ? https.createServer({ key: tlsOpts.key, cert: tlsOpts.cert }, app2).listen(p, "0.0.0.0") : app2.listen(p, "0.0.0.0");
           srv.once("listening", () => resolve(srv));
           srv.once("error", (err) => {
             if (err.code === "EADDRINUSE" && attemptsLeft > 0) {
@@ -71113,8 +70630,12 @@ var require_lan_share = __commonJS({
         tryPort(port, 5);
       });
     }
-    async function enable(app2, wss2, user, pass, portHint) {
-      if (state.server && digestAuth.getCredentials()?.user === user && digestAuth.getCredentials()?.pass === pass) {
+    async function enable(app2, wss2, user, pass, portHint, useTls = false, ips = []) {
+      let tlsOpts = null;
+      if (useTls) {
+        tlsOpts = tlsCert.ensure(config2.dataRoot, ips);
+      }
+      if (state.server && digestAuth.getCredentials()?.user === user && digestAuth.getCredentials()?.pass === pass && state.tls === !!useTls && (!useTls || state.fingerprint === tlsOpts.fingerprint)) {
         return status();
       }
       if (state.server) {
@@ -71122,7 +70643,7 @@ var require_lan_share = __commonJS({
       }
       digestAuth.setCredentials(user, pass);
       const wantPort = Number(portHint) > 0 ? Number(portHint) : pickPort();
-      const srv = await listenOn(app2, wantPort, wss2);
+      const srv = await listenOn(app2, wantPort, tlsOpts);
       srv.on("upgrade", (req, socket, head) => {
         const pathname = url.parse(req.url).pathname;
         if (pathname !== "/ws") {
@@ -71136,7 +70657,9 @@ var require_lan_share = __commonJS({
       state.server = srv;
       state.port = srv.address().port;
       state.since = Date.now();
-      console.log(`[lan-share] serverB listening on 0.0.0.0:${state.port} (digest auth on)`);
+      state.tls = !!useTls;
+      state.fingerprint = tlsOpts ? tlsOpts.fingerprint : "";
+      console.log(`[lan-share] serverB listening on 0.0.0.0:${state.port} (digest auth on, ${state.tls ? "TLS" : "plain http"})`);
       return status();
     }
     function disable() {
@@ -71148,6 +70671,8 @@ var require_lan_share = __commonJS({
         state.server = null;
         state.port = 0;
         state.since = 0;
+        state.tls = false;
+        state.fingerprint = "";
         digestAuth.setCredentials(null, null);
         if (typeof srv.closeAllConnections === "function") {
           srv.closeAllConnections();
@@ -71171,11 +70696,12 @@ var require_lan_share = __commonJS({
         const body = req.body || {};
         const action = body.action;
         if (action === "enable") {
-          const { user, pass, port } = body;
+          const { user, pass, port, tls, ips } = body;
           if (!user || !pass || String(pass).length < 4) {
             return res.status(400).json({ error: "user and pass (>=4 chars) required" });
           }
-          enable(app2, wss2, String(user), String(pass), Number(port) || 0).then((st) => res.json(st)).catch((e) => res.status(500).json({ error: String(e && e.message || e) }));
+          const ipList = Array.isArray(ips) ? ips.map(String).filter(tlsCert.isIPv4) : [];
+          enable(app2, wss2, String(user), String(pass), Number(port) || 0, tls === true, ipList).then((st) => res.json(st)).catch((e) => res.status(500).json({ error: String(e && e.message || e) }));
           return;
         }
         if (action === "disable") {
@@ -71216,7 +70742,6 @@ var {
 } = require_manager();
 var obCli = require_ob_cli();
 var pluginRoutes = require_plugins();
-var { setupDemo, wireDemoWebSocket } = require_demo();
 var { flushAll } = writeCoalescer;
 writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
 watcher.configure({ ignoredPaths: settings.resolveIgnoreLines() });
@@ -71269,7 +70794,6 @@ var { createMetadataChannel } = require_metadata_channel();
 var { registerCacheListeners } = require_listeners();
 var vaultLifecycle = require_lifecycle();
 app.use("/assets", express.static(path.join(__dirname, "assets")));
-setupDemo(app);
 app.use("/api/fs", fsRoutes);
 app.use("/api/vault", vaultRoutes);
 app.use("/api/proxy", proxyRoutes);
@@ -71435,7 +70959,6 @@ var wss = setupWebSocket(server, {
 });
 vaultLifecycle.setWss(wss);
 require_lan_share().setupLanShare(app, wss);
-wireDemoWebSocket(server);
 var metadataChannel = createMetadataChannel(wss);
 registerCacheListeners({
   bootstrapCache,

@@ -4,7 +4,7 @@
 //   2. __dirname 问题：bundle 运行时 __dirname = bundle 所在目录。
 //      server 代码假设的目录结构是 <root>/apps/ignis-server/server/，
 //      所以 bundle 放到同样深度：out/apps/ignis-server/server/index.js
-//      伴随文件（build-info.json、demo-capacity.html、assets/、静态目录）也复制到对应位置
+//      伴随文件（build-info.json、assets/、静态目录）也复制到对应位置
 //   3. 手机沙箱里布置为：ignis/apps/ignis-server/server/index.js + ignis/packages/{ui,shim}/dist/...
 const { execSync } = require("child_process");
 const fs = require("fs");
@@ -52,10 +52,6 @@ fs.writeFileSync(
     2,
   ) + "\n",
 );
-fs.copyFileSync(
-  path.join(ROOT, "apps/ignis-server/server/demo/demo-capacity.html"),
-  path.join(SERVER_DIR, "demo-capacity.html"),
-);
 fs.cpSync(
   path.join(ROOT, "apps/ignis-server/server/assets"),
   path.join(SERVER_DIR, "assets"),
@@ -80,13 +76,6 @@ fs.cpSync(
     filter: (src) => !/\.test\.[cm]?js$/.test(src),
   },
 );
-// demo-template（demo 模式用，占空间小，保留以防引用）
-fs.cpSync(
-  path.join(ROOT, "apps/ignis-server/server/demo-template"),
-  path.join(SERVER_DIR, "demo-template"),
-  { recursive: true },
-);
-
 // 3. REPO_ROOT 相对静态目录：packages/ui/dist、packages/shim/dist、images/favicon
 fs.cpSync(
   path.join(ROOT, "packages/ui/dist"),
