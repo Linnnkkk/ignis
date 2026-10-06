@@ -24,7 +24,6 @@ const {
 } = require("./plugin-system/manager");
 const obCli = require("./obsidian-account/ob-cli");
 const pluginRoutes = require("./routes/plugins");
-const { setupDemo, wireDemoWebSocket } = require("./demo");
 const { flushAll } = writeCoalescer;
 
 writeCoalescer.configure({ writeCoalesceMs: settings.get("writeCoalesceMs") });
@@ -102,10 +101,6 @@ const { registerCacheListeners } = require("./cache/listeners");
 const vaultLifecycle = require("./vault/lifecycle");
 
 app.use("/assets", express.static(path.join(__dirname, "assets")));
-
-// Demo mode: layers session/quota/allowlist middleware on top of the existing routes.
-// Must run BEFORE the routes are mounted. No-op when DEMO_MODE != true.
-setupDemo(app);
 
 app.use("/api/fs", fsRoutes);
 app.use("/api/vault", vaultRoutes);
@@ -328,7 +323,6 @@ vaultLifecycle.setWss(wss);
 
 // 伺服器模式：动态 serverB（0.0.0.0 + Digest）管理 API（仅回环，ArkTS 壳层调用）
 require("./lan-share").setupLanShare(app, wss);
-wireDemoWebSocket(server);
 
 const metadataChannel = createMetadataChannel(wss);
 

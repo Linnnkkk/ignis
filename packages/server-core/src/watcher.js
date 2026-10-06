@@ -2,6 +2,7 @@ const chokidar = require("chokidar");
 const path = require("path");
 const ignore = require("ignore");
 const { toVaultRel } = require("./path-utils");
+const { creationTime } = require("./file-times");
 
 const DEFAULT_IGNORED_PATHS = [".git"];
 
@@ -148,7 +149,7 @@ function startWatching(vaultId, vaultPath) {
       event.stat = {
         size: stat.size,
         mtime: stat.mtimeMs,
-        ctime: stat.ctimeMs,
+        ctime: creationTime(stat),
       };
     }
 

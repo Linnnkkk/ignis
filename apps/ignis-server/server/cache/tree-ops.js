@@ -1,13 +1,13 @@
 const fs = require("fs");
 const fsp = fs.promises;
-const { fromVaultRel } = require("@ignis/server-core");
+const { fromVaultRel, creationTime } = require("@ignis/server-core");
 
 function fileNode(s) {
   return {
     type: "file",
     size: s.size,
     mtime: s.mtimeMs,
-    ctime: s.ctimeMs,
+    ctime: creationTime(s), // Obsidian ctime is creation time, not POSIX inode ctime.
   };
 }
 

@@ -13,6 +13,7 @@ const {
   writeCoalescer,
   toVaultRel,
   fromVaultRel,
+  creationTime,
 } = require("@ignis/server-core");
 const { getPending, pendingPaths, estimateSize } = writeCoalescer;
 const {
@@ -69,7 +70,7 @@ async function walkTree(rootPath) {
               type: "file",
               size,
               mtime: Date.now(),
-              ctime: s ? s.ctimeMs : Date.now(),
+              ctime: s ? creationTime(s) : Date.now(),
             };
           } else {
             tree[relPath] = fileNode(await fsp.stat(full));
@@ -129,8 +130,7 @@ function buildResponse(vaultId, vaultPath, tree, etag) {
     vaultList: buildVaultList(),
     tree,
     etag,
-    // In demo mode, hide server-side plugins from the client.
-    plugins: config.demoMode ? [] : getDiscoveredPlugins(),
+    plugins: getDiscoveredPlugins(),
     virtualPlugins: getVirtualPluginsForVault(vaultId, getVersion()),
     settings: {
       contentCacheBytes: settings.get("contentCacheBytes"),

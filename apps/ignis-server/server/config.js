@@ -79,6 +79,13 @@ function discoverVaults() {
 
 let vaults = discoverVaults();
 
+const RESCAN_MIN_INTERVAL_MS = 1000;
+let lastRescanAt = 0;
+
+function getVaultPath(id) {
+  return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
+}
+
 module.exports = {
   port: process.env.PORT || 8080,
   host: process.env.LISTEN_HOST || "127.0.0.1",
@@ -90,8 +97,18 @@ module.exports = {
   get defaultVaultId() {
     return Object.keys(vaults)[0] || null;
   },
-  getVaultPath(id) {
-    return Object.prototype.hasOwnProperty.call(vaults, id) ? vaults[id] : null;
+  getVaultPath,
+  getVaultPathOrRescan(id, now = Date.now()) {
+    const known = getVaultPath(id);
+
+    if (known || !id || now - lastRescanAt < RESCAN_MIN_INTERVAL_MS) {
+      return known;
+    }
+
+    lastRescanAt = now;
+    vaults = discoverVaults();
+
+    return getVaultPath(id);
   },
   // { vaultId, relPath } or null
   vaultForPath(absPath) {
@@ -114,15 +131,6 @@ module.exports = {
     vaults = discoverVaults();
     return vaults;
   },
-
-  demoMode: process.env.DEMO_MODE === "true",
-  demoMaxSessions: parseInt(process.env.DEMO_MAX_SESSIONS) || 20,
-  demoVaultsPerSession: parseInt(process.env.DEMO_VAULTS_PER_SESSION) || 3,
-  demoSessionQuotaBytes:
-    parseInt(process.env.DEMO_SESSION_QUOTA_BYTES) || 700 * 1024,
-  demoTimeoutMs: parseInt(process.env.DEMO_TIMEOUT_MS) || 30 * 60 * 1000,
-  demoTemplateDir:
-    process.env.DEMO_TEMPLATE_DIR || path.join(__dirname, "demo-template"),
 
   // 0 = disabled
   headlessSyncIdleRestartMs:

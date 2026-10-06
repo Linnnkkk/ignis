@@ -50,11 +50,11 @@ describe("MetadataCache toStat", () => {
 
     expect(stat.size).toBe(42);
     expect(stat.mtimeMs).toBe(1000);
-    expect(stat.ctimeMs).toBe(2000);
+    expect(stat.ctimeMs).toBe(1000);
     expect(stat.atimeMs).toBe(1000);
     expect(stat.birthtimeMs).toBe(2000);
     expect(stat.mtime).toEqual(new Date(1000));
-    expect(stat.ctime).toEqual(new Date(2000));
+    expect(stat.ctime).toEqual(new Date(1000));
     expect(stat.atime).toEqual(new Date(1000));
     expect(stat.birthtime).toEqual(new Date(2000));
     expect(stat.isFile()).toBe(true);

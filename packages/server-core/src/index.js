@@ -8,6 +8,7 @@ const {
   fromVaultRel,
 } = require("./path-utils");
 const { sanitizeError } = require("./errors");
+const { creationTime } = require("./file-times");
 
 module.exports = {
   writeCoalescer,
@@ -18,4 +19,5 @@ module.exports = {
   toVaultRel,
   fromVaultRel,
   sanitizeError,
+  creationTime,
 };
