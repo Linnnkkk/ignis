@@ -229,6 +229,94 @@ router.get("/readFile", async (req, res) => {
   }
 });
 
+// Large binary writes use bounded chunks and an atomic rename, never a whole-file JSON body.
+const uploads = new Map();
+const UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const UPLOAD_IDLE_MS = 10 * 60 * 1000;
+
+async function discardUpload(id) {
+  const upload = uploads.get(id);
+  if (!upload) return;
+  uploads.delete(id);
+  clearTimeout(upload.timer);
+  await fs.promises.unlink(upload.temp).catch(() => {});
+}
+
+function refreshUpload(id, upload) {
+  clearTimeout(upload.timer);
+  upload.timer = setTimeout(() => {
+    if (upload.busy) refreshUpload(id, upload);
+    else discardUpload(id).catch(() => {});
+  }, UPLOAD_IDLE_MS);
+  upload.timer.unref();
+}
+
+router.post("/writeFileChunk", async (req, res) => {
+  const resolved = guardPath(req, res, "body");
+  if (!resolved) return;
+  const { action, id, size, offset, content } = req.body;
+  if (action === "start") {
+    if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_MAX_BYTES || uploads.size >= 16) {
+      return res.status(400).json({ error: "Invalid upload size or too many uploads" });
+    }
+    try {
+      await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+      const token = require("crypto").randomBytes(24).toString("hex");
+      const temp = path.join(path.dirname(resolved), ".ignis-upload-" + token);
+      await fs.promises.writeFile(temp, Buffer.alloc(0), { flag: "wx", mode: 0o600 });
+      const upload = { temp, resolved, vaultId: req._vaultId, size, offset: 0, busy: false, timer: null };
+      uploads.set(token, upload);
+      refreshUpload(token, upload);
+      return res.json({ ok: true, id: token });
+    } catch (e) {
+      return res.status(500).json(sanitizeError(e));
+    }
+  }
+  const upload = uploads.get(id);
+  if (!upload || upload.resolved !== resolved || upload.vaultId !== req._vaultId) {
+    return res.status(404).json({ error: "Upload not found" });
+  }
+  if (upload.busy) return res.status(409).json({ error: "Upload busy" });
+  upload.busy = true;
+  refreshUpload(id, upload);
+  try {
+    if (action === "cancel") {
+      await discardUpload(id);
+      return res.json({ ok: true });
+    }
+    if (action === "chunk") {
+      if (offset !== upload.offset || typeof content !== "string" ||
+          content.length > Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4) {
+        return res.status(400).json({ error: "Invalid upload chunk" });
+      }
+      const data = Buffer.from(content, "base64");
+      if (data.length === 0 || data.length > UPLOAD_CHUNK_BYTES || upload.offset + data.length > upload.size) {
+        return res.status(400).json({ error: "Invalid upload chunk size" });
+      }
+      await fs.promises.appendFile(upload.temp, data);
+      upload.offset += data.length;
+      return res.json({ ok: true, offset: upload.offset });
+    }
+    if (action === "finish") {
+      if (upload.offset !== upload.size) return res.status(400).json({ error: "Incomplete upload" });
+      await flushPending(resolved);
+      await fs.promises.rename(upload.temp, resolved);
+      uploads.delete(id);
+      clearTimeout(upload.timer);
+      const stat = await fs.promises.stat(resolved);
+      applyToTree(req, { type: "modified", path: toRelative(req._vaultRoot, resolved) });
+      return res.json({ ok: true, mtime: stat.mtimeMs, size: stat.size });
+    }
+    return res.status(400).json({ error: "Invalid upload action" });
+  } catch (e) {
+    await discardUpload(id);
+    return res.status(500).json(sanitizeError(e));
+  } finally {
+    upload.busy = false;
+  }
+});
+
 // POST /api/fs/writeFile { path, content, encoding?, vault? }
 router.post("/writeFile", async (req, res) => {
   const resolved = guardPath(req, res, "body");

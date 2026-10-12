@@ -26,6 +26,30 @@ function lastInit() {
   return fetchMock.mock.calls.at(-1)[1];
 }
 
+describe("large binary uploads", () => {
+  it("sends bounded chunks and waits for atomic finish", async () => {
+    fetchMock.mockImplementation(async () => ({ ok: true, json: async () => ({ id: "upload-test", ok: true }) }));
+    await transport.writeFile("video.mp4", new Uint8Array(5 * 1024 * 1024 + 7));
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body));
+    expect(bodies[0]).toMatchObject({ action: "start", size: 5 * 1024 * 1024 + 7, vault: "v" });
+    const chunks = bodies.filter((body) => body.action === "chunk");
+    expect(chunks).toHaveLength(6);
+    expect(chunks.map((body) => body.offset)).toEqual([0, 1048576, 2097152, 3145728, 4194304, 5242880]);
+    expect(chunks.every((body) => body.content.length <= Math.ceil(1048576 / 3) * 4)).toBe(true);
+    expect(bodies.at(-1).action).toBe("finish");
+  });
+
+  it("cancels a failed upload and preserves the original error", async () => {
+    let count = 0;
+    fetchMock.mockImplementation(async () => {
+      if (++count === 2) throw new Error("network interrupted");
+      return { ok: true, json: async () => ({ id: "upload-test" }) };
+    });
+    await expect(transport.writeFile("video.mp4", new Uint8Array(5 * 1024 * 1024))).rejects.toThrow("network interrupted");
+    expect(JSON.parse(lastInit().body).action).toBe("cancel");
+  });
+});
+
 describe("transport keepalive gating", () => {
   it("sets keepalive on a small write", async () => {
     await transport.writeFile("a.md", "hello", "utf-8");

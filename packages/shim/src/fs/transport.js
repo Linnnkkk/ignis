@@ -150,6 +150,28 @@ export const transport = {
 
   async writeFile(path, content, encoding) {
     const isText = typeof content === "string";
+    if (!isText && content.byteLength > 4 * 1024 * 1024) {
+      const target = normPath(path);
+      const start = await requestJson("POST", "/writeFileChunk", {
+        action: "start", path: target, size: content.byteLength,
+      });
+      try {
+        for (let offset = 0; offset < content.byteLength; offset += 1024 * 1024) {
+          await requestJson("POST", "/writeFileChunk", {
+            action: "chunk", path: target, id: start.id, offset,
+            content: uint8ToBase64(content.subarray(offset, offset + 1024 * 1024)),
+          });
+        }
+        return await requestJson("POST", "/writeFileChunk", {
+          action: "finish", path: target, id: start.id,
+        });
+      } catch (error) {
+        await requestJson("POST", "/writeFileChunk", {
+          action: "cancel", path: target, id: start.id,
+        }).catch(() => {});
+        throw error;
+      }
+    }
     return requestJson("POST", "/writeFile", {
       path: normPath(path),
       content: isText ? content : uint8ToBase64(content),
@@ -232,6 +254,22 @@ export const transport = {
 
   writeFileSync(path, content, encoding) {
     const isText = typeof content === "string";
+    if (!isText && content.byteLength > 4 * 1024 * 1024) {
+      const target = normPath(path);
+      const send = (params) => JSON.parse(requestSync("POST", "/writeFileChunk", params).responseText);
+      const start = send({ action: "start", path: target, size: content.byteLength });
+      try {
+        for (let offset = 0; offset < content.byteLength; offset += 1024 * 1024) {
+          send({ action: "chunk", path: target, id: start.id, offset,
+            content: uint8ToBase64(content.subarray(offset, offset + 1024 * 1024)) });
+        }
+        send({ action: "finish", path: target, id: start.id });
+      } catch (error) {
+        try { send({ action: "cancel", path: target, id: start.id }); } catch {}
+        throw error;
+      }
+      return;
+    }
     requestSync("POST", "/writeFile", {
       path: normPath(path),
       content: isText ? content : uint8ToBase64(content),
