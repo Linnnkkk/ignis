@@ -3,8 +3,25 @@ import { execCommandCopy, execCommandCopyHTML } from "../../util/clipboard.js";
 import { reportInsecureApi } from "../../util/insecure-api.js";
 
 export const clipboardShim = {
+  // Obsidian's navigator.clipboard.readText() is `async () => electron.clipboard.readText()`, so a
+  // Promise is awaited transparently. Sync callers of the raw Electron API get a Promise instead of "".
   readText() {
-    return "";
+    // The host app (Vitreus) may inject a bridge that reads the system clipboard natively.
+    if (typeof window !== "undefined" && typeof window.__vtClipRead === "function") {
+      return window.__vtClipRead();
+    }
+
+    const clip = getClipboard();
+
+    if (!clip) {
+      reportInsecureApi("clipboard.readText", { passive: true });
+      return Promise.resolve("");
+    }
+
+    return clip.readText().catch((e) => {
+      console.warn("[shim:clipboard] readText failed:", e);
+      return "";
+    });
   },
 
   writeText(text) {

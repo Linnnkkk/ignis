@@ -15,6 +15,7 @@ import * as utilShim from "./node/util.js";
 import { constantsShim } from "./node/constants.js";
 import { assertShim } from "./node/assert.js";
 import * as streamShim from "./node/stream.js";
+import * as asyncHooksShim from "./node/async_hooks.js";
 import { wrapWithProxy, installDebugHelpers } from "./debug.js";
 
 const rawRegistry = {
@@ -22,6 +23,7 @@ const rawRegistry = {
   "@electron/remote": remoteShim,
   "original-fs": fsShim,
   fs: fsShim,
+  "fs/promises": fsShim.promises,
   path: pathShim,
   url: urlShim,
   crypto: cryptoShim,
@@ -37,6 +39,7 @@ const rawRegistry = {
   constants: constantsShim,
   assert: assertShim,
   stream: streamShim,
+  async_hooks: asyncHooksShim,
 };
 
 const shimRegistry = {};

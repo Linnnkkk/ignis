@@ -13,10 +13,6 @@ const MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
-function sameOrigin(a, b) {
-  return a.protocol === b.protocol && a.host === b.host;
-}
-
 // Let the proxy handle the Content-Length and Transfer-Encoding headers itself.
 function stripRequestFramingHeaders(headers) {
   const out = {};
@@ -93,18 +89,10 @@ async function proxyRequest({ url, method, headers, body }) {
     res.resume();
     const next = new URL(res.headers.location, current);
 
-    // The caller did not choose the redirect target, so credentials do not cross origins.
-    if (!sameOrigin(current, next)) {
-      currentHeaders = { ...currentHeaders };
-
-      for (const key of Object.keys(currentHeaders)) {
-        const lower = key.toLowerCase();
-
-        if (lower === "authorization" || lower === "cookie") {
-          delete currentHeaders[key];
-        }
-      }
-    }
+    // Credentials are kept across origins on purpose: Obsidian's native requestUrl uses
+    // Electron net.request({ redirect: "follow" }), which re-sends the caller's headers
+    // (Authorization/Cookie included) on every hop. Stripping them here made WebDAV/S3-style
+    // plugins fail with 401 after a cross-origin redirect. Each hop still goes through the SSRF guard.
 
     // 301/302/303 turn a non-GET follow-up into a GET; 307/308 preserve method and body.
     if (res.statusCode !== 307 && res.statusCode !== 308) {

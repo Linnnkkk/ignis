@@ -267,6 +267,14 @@ function resolveWorkspaceAndAppearance() {
 }
 
 export function initialize() {
+  // Copilot 4.0.14's desktop SDK allocates an unused retry buffer at import time.
+  // Adapt only that allocation in memory; do not advertise fake shared-memory support globally.
+  registerReadTransform((path) => /(?:^|\/)\.obsidian\/plugins\/copilot\/main\.js$/.test(path), (data) => {
+    if (typeof globalThis.SharedArrayBuffer !== "undefined") return data;
+    const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+    const patched = text.replace("new Int32Array(new SharedArrayBuffer(4))", "new Int32Array(new ArrayBuffer(4))");
+    return typeof data === "string" ? patched : new TextEncoder().encode(patched);
+  });
   resolveVaultId();
 
   const bootstrap = fetchBootstrap();

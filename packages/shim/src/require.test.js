@@ -30,4 +30,20 @@ describe("window.require", () => {
     expect(process.cwd()).toBe("/");
     expect(process.platform).toBe("linux");
   });
+
+  it("resolves fs/promises to fs.promises", () => {
+    const fsp = window.require("node:fs/promises");
+
+    expect(typeof fsp.readFile).toBe("function");
+    expect(typeof fsp.writeFile).toBe("function");
+  });
+
+  it("provides AsyncLocalStorage from async_hooks", () => {
+    const { AsyncLocalStorage } = window.require("async_hooks");
+    const als = new AsyncLocalStorage();
+
+    expect(als.getStore()).toBeUndefined();
+    expect(als.run({ a: 1 }, () => als.getStore())).toEqual({ a: 1 });
+    expect(als.getStore()).toBeUndefined();
+  });
 });

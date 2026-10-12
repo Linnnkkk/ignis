@@ -111,11 +111,14 @@ function createDigestAuth() {
       return res.status(429).send("429 Too Many Attempts");
     }
 
+    const h = req.headers["authorization"];
+    const supplied = h && /^Digest\s/i.test(h)
+      ? parseDigestParams(h.slice(h.indexOf(" ") + 1)) : null;
+    // Keep the presented nonce until its expiry can be reported as stale, not bad credentials.
     for (const [k, v] of issuedNonces) {
-      if (now - v.ts > NONCE_TTL) issuedNonces.delete(k);
+      if (now - v.ts > NONCE_TTL && k !== supplied?.nonce) issuedNonces.delete(k);
     }
 
-    const h = req.headers["authorization"];
     if (!h || !/^Digest\s/i.test(h)) {
       res.set("WWW-Authenticate", challenge(false));
       return res.status(401).send("401 Unauthorized");
@@ -141,6 +144,12 @@ function createDigestAuth() {
       recordFailure(ip, now);
       res.set("WWW-Authenticate", challenge(false));
       return res.status(401).send("401 Unauthorized");
+    }
+
+    if (now - rec.ts > NONCE_TTL) {
+      issuedNonces.delete(p.nonce);
+      res.set("WWW-Authenticate", challenge(true));
+      return res.status(401).send("401 Stale Nonce");
     }
 
     // nc 单调递增：同 nonce 的重复序号 = 重放，拒绝但带 stale 换发（正常浏览器不会撞）

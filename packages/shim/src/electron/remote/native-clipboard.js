@@ -15,5 +15,6 @@ export function getClipboard() {
     writeText: (text) => proto.writeText.call(clip, text),
     write: (items) => proto.write.call(clip, items),
     read: () => proto.read.call(clip),
+    readText: () => proto.readText.call(clip),
   };
 }

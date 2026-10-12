@@ -1,6 +1,25 @@
 export class EventEmitter {
+  static defaultMaxListeners = 10;
+
+  static setMaxListeners(n, ...targets) {
+    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) {
+      throw new RangeError("The maximum listener count must be a non-negative number");
+    }
+    if (targets.length === 0) {
+      EventEmitter.defaultMaxListeners = n;
+    }
+    for (const target of targets) {
+      if (target && typeof target.setMaxListeners === "function") {
+        target.setMaxListeners(n);
+      } else if (!(typeof EventTarget !== "undefined" && target instanceof EventTarget)) {
+        throw new TypeError("Expected an EventEmitter or EventTarget");
+      }
+    }
+  }
+
   constructor() {
     this._events = {};
+    this._maxListeners = EventEmitter.defaultMaxListeners;
   }
 
   on(event, listener) {
@@ -96,13 +115,19 @@ export class EventEmitter {
     return Object.keys(this._events);
   }
 
-  setMaxListeners() {
+  setMaxListeners(n) {
+    if (typeof n !== "number" || n < 0 || Number.isNaN(n)) {
+      throw new RangeError("The maximum listener count must be a non-negative number");
+    }
+    this._maxListeners = n;
     return this;
   }
 
   getMaxListeners() {
-    return 10;
+    return this._maxListeners;
   }
 }
+
+export const setMaxListeners = EventEmitter.setMaxListeners;
 
 export default EventEmitter;
