@@ -1,12 +1,9 @@
 /* CSS overrides for browser vs desktop differences. */
 
-/* Remove right padding for non-existent window controls (minimize/maximize/close). */
-.is-hidden-frameless:not(.is-fullscreen) .workspace-tabs.mod-top-right-space .workspace-tab-header-container {
-  padding-right: var(--size-4-2) !important;
-}
-
-.is-hidden-frameless:not(.is-fullscreen):not(.mod-macos) .workspace-tabs.mod-top-right-space .workspace-tab-header-container:after {
-  display: none !important;
+/* A browser tab has no window controls to reserve space for. */
+body {
+  --frame-left-space: 0px !important;
+  --frame-right-space: 0px !important;
 }
 
 /* fix table cell height in firefox in edit mode with live preview */
@@ -20,4 +17,15 @@
 .workspace-drawer-header-switcher select option {
   background-color: var(--background-secondary);
   color: var(--text-normal);
+}
+
+/* 100% and 100vh extend under mobile browser bars. */
+@supports (height: 100dvh) {
+  body.is-phone {
+    height: 100dvh;
+  }
+
+  body.is-phone .mobile-toolbar {
+    top: calc(100dvh - var(--keyboard-height) - var(--mobile-toolbar-height));
+  }
 }

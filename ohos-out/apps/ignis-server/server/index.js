@@ -34673,7 +34673,7 @@ var require_config = __commonJS({
       headlessSyncIdleRestartMs: parseInt(process.env.HEADLESS_SYNC_IDLE_RESTART_MS) || 0,
       devSuppressWriteFailures: process.env.DEV_SUPPRESS_WRITE_FAILURES === "true",
       devForceReadingView: process.env.DEV_FORCE_READING_VIEW === "true",
-      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.13.7_unpacked"),
+      obsidianAssetsPath: process.env.OBSIDIAN_ASSETS_PATH || path2.join(REPO_ROOT2, "investigation", "obsidian_1.14.4_unpacked"),
       obsidianTermsOverride: process.env.OBSIDIAN_TERMS_STRING || "",
       get obsidianVersion() {
         const assetsPath = this.obsidianAssetsPath;
@@ -34741,6 +34741,13 @@ var require_settings = __commonJS({
       }
       if (process.env.PROXY_ALLOW_PRIVATE_HOSTS) {
         env.proxyAllowPrivate = parseList(process.env.PROXY_ALLOW_PRIVATE_HOSTS);
+      } else if (true) {
+        env.proxyAllowPrivate = [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "100.64.0.0/10"
+        ];
       }
       return env;
     }
@@ -42563,20 +42570,25 @@ var require_digest_auth = __commonJS({
           res.set("Retry-After", Math.ceil(lockMs / 1e3));
           return res.status(429).send("429 Too Many Attempts");
         }
+        const h = req.headers["authorization"];
+        const supplied = h && /^Digest\s/i.test(h) ? parseDigestParams(h.slice(h.indexOf(" ") + 1)) : null;
         for (const [k, v] of issuedNonces) {
-          if (now - v.ts > NONCE_TTL)
+          if (now - v.ts > NONCE_TTL && k !== supplied?.nonce)
             issuedNonces.delete(k);
         }
-        const h = req.headers["authorization"];
         if (!h || !/^Digest\s/i.test(h)) {
           res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
         }
         const p = parseDigestParams(h.slice(h.indexOf(" ") + 1));
         const rec = issuedNonces.get(p.nonce);
-        if (!rec || !p.response || !p.username) {
+        if (!p.response || !p.username) {
           res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
+        }
+        if (!rec) {
+          res.set("WWW-Authenticate", challenge(true));
+          return res.status(401).send("401 Stale Nonce");
         }
         const ha1 = md5(creds.user + ":" + REALM + ":" + creds.pass);
         const ha2 = md5(req.method + ":" + p.uri);
@@ -42590,6 +42602,10 @@ var require_digest_auth = __commonJS({
           recordFailure(ip, now);
           res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
+        }
+        if (now - rec.ts > NONCE_TTL) {
+          res.set("WWW-Authenticate", challenge(true));
+          return res.status(401).send("401 Stale Nonce");
         }
         const ncNum = parseInt(p.nc || "0", 16);
         if (p.qop === "auth") {
@@ -68815,6 +68831,96 @@ var require_fs = __commonJS({
         res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));
       }
     });
+    var uploads = /* @__PURE__ */ new Map();
+    var UPLOAD_CHUNK_BYTES = 1024 * 1024;
+    var UPLOAD_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+    var UPLOAD_IDLE_MS = 10 * 60 * 1e3;
+    async function discardUpload(id) {
+      const upload = uploads.get(id);
+      if (!upload)
+        return;
+      uploads.delete(id);
+      clearTimeout(upload.timer);
+      await fs2.promises.unlink(upload.temp).catch(() => {
+      });
+    }
+    function refreshUpload(id, upload) {
+      clearTimeout(upload.timer);
+      upload.timer = setTimeout(() => {
+        if (upload.busy)
+          refreshUpload(id, upload);
+        else
+          discardUpload(id).catch(() => {
+          });
+      }, UPLOAD_IDLE_MS);
+      upload.timer.unref();
+    }
+    router.post("/writeFileChunk", async (req, res) => {
+      const resolved = guardPath(req, res, "body");
+      if (!resolved)
+        return;
+      const { action, id, size, offset, content } = req.body;
+      if (action === "start") {
+        if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_MAX_BYTES || uploads.size >= 16) {
+          return res.status(400).json({ error: "Invalid upload size or too many uploads" });
+        }
+        try {
+          await fs2.promises.mkdir(path2.dirname(resolved), { recursive: true });
+          const token = require("crypto").randomBytes(24).toString("hex");
+          const temp = path2.join(path2.dirname(resolved), ".ignis-upload-" + token);
+          await fs2.promises.writeFile(temp, Buffer.alloc(0), { flag: "wx", mode: 384 });
+          const upload2 = { temp, resolved, vaultId: req._vaultId, size, offset: 0, busy: false, timer: null };
+          uploads.set(token, upload2);
+          refreshUpload(token, upload2);
+          return res.json({ ok: true, id: token });
+        } catch (e) {
+          return res.status(500).json(sanitizeError(e));
+        }
+      }
+      const upload = uploads.get(id);
+      if (!upload || upload.resolved !== resolved || upload.vaultId !== req._vaultId) {
+        return res.status(404).json({ error: "Upload not found" });
+      }
+      if (upload.busy)
+        return res.status(409).json({ error: "Upload busy" });
+      upload.busy = true;
+      refreshUpload(id, upload);
+      try {
+        if (action === "cancel") {
+          await discardUpload(id);
+          return res.json({ ok: true });
+        }
+        if (action === "chunk") {
+          if (offset !== upload.offset || typeof content !== "string" || content.length > Math.ceil(UPLOAD_CHUNK_BYTES / 3) * 4) {
+            return res.status(400).json({ error: "Invalid upload chunk" });
+          }
+          const data = Buffer.from(content, "base64");
+          if (data.length === 0 || data.length > UPLOAD_CHUNK_BYTES || upload.offset + data.length > upload.size) {
+            return res.status(400).json({ error: "Invalid upload chunk size" });
+          }
+          await fs2.promises.appendFile(upload.temp, data);
+          upload.offset += data.length;
+          return res.json({ ok: true, offset: upload.offset });
+        }
+        if (action === "finish") {
+          if (upload.offset !== upload.size)
+            return res.status(400).json({ error: "Incomplete upload" });
+          await flushPending(resolved);
+          await fs2.promises.rename(upload.temp, resolved);
+          uploads.delete(id);
+          clearTimeout(upload.timer);
+          const stat = await fs2.promises.stat(resolved);
+          applyToTree(req, { type: "modified", path: toRelative(req._vaultRoot, resolved) });
+          return res.json({ ok: true, mtime: stat.mtimeMs, size: stat.size });
+        }
+        return res.status(400).json({ error: "Invalid upload action" });
+      } catch (e) {
+        await discardUpload(id);
+        return res.status(500).json(sanitizeError(e));
+      } finally {
+        upload.busy = false;
+      }
+    });
     router.post("/writeFile", async (req, res) => {
       const resolved = guardPath(req, res, "body");
       if (!resolved) {
@@ -69784,9 +69890,6 @@ var require_relay = __commonJS({
     var MAX_RESPONSE_BYTES = 50 * 1024 * 1024;
     var MAX_REDIRECTS = 5;
     var REDIRECT_CODES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
-    function sameOrigin(a, b) {
-      return a.protocol === b.protocol && a.host === b.host;
-    }
     function stripRequestFramingHeaders(headers) {
       const out = {};
       for (const [key, val] of Object.entries(headers)) {
@@ -69841,15 +69944,6 @@ var require_relay = __commonJS({
         }
         res.resume();
         const next = new URL(res.headers.location, current);
-        if (!sameOrigin(current, next)) {
-          currentHeaders = { ...currentHeaders };
-          for (const key of Object.keys(currentHeaders)) {
-            const lower = key.toLowerCase();
-            if (lower === "authorization" || lower === "cookie") {
-              delete currentHeaders[key];
-            }
-          }
-        }
         if (res.statusCode !== 307 && res.statusCode !== 308) {
           if (currentMethod !== "GET" && currentMethod !== "HEAD") {
             currentMethod = "GET";
