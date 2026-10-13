@@ -126,9 +126,15 @@ function createDigestAuth() {
 
     const p = parseDigestParams(h.slice(h.indexOf(" ") + 1));
     const rec = issuedNonces.get(p.nonce);
-    if (!rec || !p.response || !p.username) {
+    if (!p.response || !p.username) {
       res.set("WWW-Authenticate", challenge(false));
       return res.status(401).send("401 Unauthorized");
+    }
+    // 带了 nonce 但服务端已不认识（并发请求里先到的那个把过期 nonce 清掉了，或服务重启）：
+    // 必须回 stale=true 让浏览器用已存的凭证静默重试；回 stale=false 会被当作"密码被拒"而弹登录框。
+    if (!rec) {
+      res.set("WWW-Authenticate", challenge(true));
+      return res.status(401).send("401 Stale Nonce");
     }
 
     const ha1 = md5(creds.user + ":" + REALM + ":" + creds.pass);
@@ -147,7 +153,7 @@ function createDigestAuth() {
     }
 
     if (now - rec.ts > NONCE_TTL) {
-      issuedNonces.delete(p.nonce);
+      // 不在此处删除：同一过期 nonce 上还有并发在途请求，交给顶部的定期清理
       res.set("WWW-Authenticate", challenge(true));
       return res.status(401).send("401 Stale Nonce");
     }

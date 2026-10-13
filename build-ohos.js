@@ -24,7 +24,8 @@ execSync(
   `npx esbuild apps/ignis-server/server/index.js ` +
     `--bundle --platform=node --format=cjs ` +
     `--outfile=${JSON.stringify(path.join(SERVER_DIR, "index.js"))} ` +
-    `--external:fsevents --loader:.node=empty`,
+    `--external:fsevents --loader:.node=empty ` +
+    `--define:process.env.IGNIS_ALLOW_LAN_PROXY='"true"'`,
   { stdio: "inherit", cwd: ROOT },
 );
 

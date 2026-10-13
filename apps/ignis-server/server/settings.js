@@ -67,6 +67,15 @@ function fromEnv() {
 
   if (process.env.PROXY_ALLOW_PRIVATE_HOSTS) {
     env.proxyAllowPrivate = parseList(process.env.PROXY_ALLOW_PRIVATE_HOSTS);
+  } else if (process.env.IGNIS_ALLOW_LAN_PROXY === "true") {
+    // Vitreus 内嵌服务：服务端就是用户自己的设备，代理访问家里/Tailscale 内网（NAS、FNS 等）是正常需求。
+    // 只放行 RFC1918 + CGNAT(Tailscale)，仍拦回环（127/8）和链路本地（169.254，云元数据）。
+    env.proxyAllowPrivate = [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "100.64.0.0/10",
+    ];
   }
 
   return env;
