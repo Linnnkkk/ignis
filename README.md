@@ -16,6 +16,11 @@
   <p align="center">
     <a href="https://ignis.thiefling.com/docs/">Documentation</a>
   </p>
+
+  <p align="center">
+    <a href="https://dev.thiefling.com/ignis/"><img src="https://img.shields.io/badge/-Follow_the_devlog-CF8E2C?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgPiA8cGF0aCBkPSJNMTMuNCAySDZhMiAyIDAgMCAwLTIgMnYxNmEyIDIgMCAwIDAgMiAyaDEyYTIgMiAwIDAgMCAyLTJ2LTcuNCIgLz4gPHBhdGggZD0iTTIgNmg0IiAvPiA8cGF0aCBkPSJNMiAxMGg0IiAvPiA8cGF0aCBkPSJNMiAxNGg0IiAvPiA8cGF0aCBkPSJNMiAxOGg0IiAvPiA8cGF0aCBkPSJNMjEuMzc4IDUuNjI2YTEgMSAwIDEgMC0zLjAwNC0zLjAwNGwtNS4wMSA1LjAxMmEyIDIgMCAwIDAtLjUwNi44NTRsLS44MzcgMi44N2EuNS41IDAgMCAwIC42Mi42MmwyLjg3LS44MzdhMiAyIDAgMCAwIC44NTQtLjUwNnoiIC8%2BIDwvc3ZnPg%3D%3D" alt="Follow development updates on the devlog"></a>
+    <a href="https://discord.gg/8pqQQj4my"><img src="https://img.shields.io/badge/-Join_the_server-5865F2?logo=discord&logoColor=white" alt="Join the Discord server"></a>
+  </p>
 </section>
 
 ## What is this

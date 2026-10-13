@@ -31,11 +31,15 @@ describe("window.require", () => {
     expect(process.platform).toBe("linux");
   });
 
-  it("resolves fs/promises to fs.promises", () => {
-    const fsp = window.require("node:fs/promises");
+  it("resolves fs/promises and node:fs/promises to fs.promises", () => {
+    const promises = window.require("fs").promises;
 
-    expect(typeof fsp.readFile).toBe("function");
-    expect(typeof fsp.writeFile).toBe("function");
+    for (const name of ["fs/promises", "node:fs/promises"]) {
+      const required = window.require(name);
+
+      expect(required.readFile).toBe(promises.readFile);
+      expect(required.writeFile).toBe(promises.writeFile);
+    }
   });
 
   it("provides AsyncLocalStorage from async_hooks", () => {

@@ -102,6 +102,7 @@ const syncHandlers = {
 
   "copy-asar": () => false,
   "check-update": () => null,
+  "latest-public-version": () => window.__obsidianVersion || null,
 
   "vault-list": () => {
     const result = {};

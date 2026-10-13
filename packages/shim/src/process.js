@@ -1,10 +1,10 @@
 export const processShim = {
   platform: "linux",
-  version: "v24.18.1",
+  version: "v24.21.0",
   versions: {
-    electron: "43.3.0",
-    node: "24.18.1",
-    chrome: "150.0.7871.212",
+    electron: "43.7.5",
+    node: "24.21.0",
+    chrome: "150.0.7871.250",
   },
   env: {},
   cwd: () => "/",

@@ -5,6 +5,7 @@ import { installEmulateMobile } from "./emulate-mobile.js";
 import { installMobileVaultSwitcher } from "./mobile-vault-switcher.js";
 import { installOpenFileParam } from "./open-file-param.js";
 import { installPopoutOverrides } from "./guards/popout-guard.js";
+import { installExternalFilesOverrides } from "./guards/external-files-guard.js";
 import { initialize, getBootstrapVirtualPlugins } from "./init.js";
 import { fsShim } from "./fs/index.js";
 import { registerUI } from "./ui-registry.js";
@@ -98,6 +99,7 @@ extractObsidianModule()
 
     if (obsidian) {
       installPopoutOverrides(obsidian);
+      installExternalFilesOverrides(obsidian, window.app);
     }
 
     installMobileVaultSwitcher(window.app);

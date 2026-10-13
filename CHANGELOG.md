@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.17] - Karm (2026-10-11)
+
+### Added
+
+- Docs, community, and support links in Ignis settings.
+- `fs/promises` shim.
+
+### Changed
+
+- Obsidian pinned at 1.14.4.
+
+### Fixed
+
+- Bottom navigation is no longer cut off on phones.
+- The mobile editor toolbar stays above the keyboard.
+- Long-pressing text on mobile shows the browser's copy and paste menu.
+- Ignis settings tab displays properly on phones.
+
 ## [0.8.16] - Karm (2026-10-04)
 
 ### Changed

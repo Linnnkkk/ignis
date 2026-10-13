@@ -7,6 +7,68 @@
   padding: 0;
 }
 
+.ignis-header-block {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.ignis-header-block .ignis-header {
+  align-self: stretch;
+}
+
+.is-phone .modal .setting-group .setting-item.ignis-status-setting {
+  flex-direction: row;
+  align-items: center;
+}
+
+.is-phone
+  .modal
+  .setting-group
+  .setting-item.ignis-status-setting
+  .setting-item-control {
+  width: auto;
+}
+
+.ignis-header-block .ignis-header-links {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--size-4-3);
+  margin: 0;
+}
+
+.ignis-header-text-link {
+  font-size: var(--font-ui-small);
+  color: #a0a0a0;
+  opacity: 0.6;
+  text-decoration: none;
+}
+
+.ignis-header-text-link:hover {
+  color: var(--text-normal);
+  opacity: 1;
+}
+
+.ignis-header-links-separator {
+  width: 1px;
+  height: 16px;
+  background-color: var(--background-modifier-border);
+}
+
+.ignis-header-link-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  filter: brightness(0) invert(0.63);
+  opacity: 0.6;
+}
+
+.ignis-header-link:hover .ignis-header-link-icon {
+  filter: none;
+  opacity: 1;
+}
+
 .ignis-message .setting-item-description {
   font-size: var(--font-ui-small);
 }
@@ -16,7 +78,7 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 16px 0 12px;
+  padding: 0 0 12px;
   margin-bottom: 12px;
   border-bottom: 1px solid var(--background-modifier-border);
 }

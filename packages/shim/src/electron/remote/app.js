@@ -23,6 +23,10 @@ export const appShim = {
     return navigator.language || "en-US";
   },
 
+  getPreferredSystemLanguages() {
+    return navigator.languages ? [...navigator.languages] : [this.getLocale()];
+  },
+
   isPackaged: true,
 
   quit() {
