@@ -6,28 +6,6 @@ import { messageDefinition, blockDefinition } from "./settings-ui.js";
 
 const GITHUB_URL = "https://github.com/Nystik-gh/ignis";
 
-const TEXT_LINKS = [
-  { text: "Docs", href: "https://ignis.thiefling.com/docs/" },
-];
-
-const ICON_LINKS = [
-  {
-    label: "Discord",
-    href: "https://discord.gg/8pqQQj4my",
-    icon: "/assets/discord.svg",
-  },
-  {
-    label: "Ko-fi",
-    href: "https://ko-fi.com/nystik",
-    icon: "/assets/kofi.svg",
-  },
-  {
-    label: "GitHub Sponsors",
-    href: "https://github.com/sponsors/Nystik-gh",
-    icon: "/assets/githubsponsors.svg",
-  },
-];
-
 function getVersion() {
   return window.__ignis?.version || "unknown";
 }
@@ -46,40 +24,11 @@ function settingDefinitions(tab) {
   ];
 }
 
-function addHeaderLinks(containerEl) {
-  const row = containerEl.createDiv("ignis-header-links");
-  const linkAttrs = { target: "_blank", rel: "noopener noreferrer" };
-
-  for (const link of TEXT_LINKS) {
-    row.createEl("a", {
-      cls: "ignis-header-text-link",
-      text: link.text,
-      href: link.href,
-      attr: linkAttrs,
-    });
-  }
-
-  row.createSpan("ignis-header-links-separator");
-
-  for (const link of ICON_LINKS) {
-    const anchor = row.createEl("a", {
-      cls: "ignis-header-link",
-      href: link.href,
-      attr: { ...linkAttrs, "aria-label": link.label },
-    });
-
-    anchor.createEl("img", {
-      cls: "ignis-header-link-icon",
-      attr: { src: link.icon, alt: link.label },
-    });
-  }
-}
-
 function addHeader(containerEl) {
   const version = getVersion();
 
   containerEl.addClass("ignis-header-block");
-  addHeaderLinks(containerEl);
+  // Vitreus 分叉：不展示上游的 Docs/Discord/Ko-fi/Sponsors 链接（指向上游社区与捐赠页，且这些图标不随内嵌包分发）
 
   const header = containerEl.createDiv("ignis-header");
 
