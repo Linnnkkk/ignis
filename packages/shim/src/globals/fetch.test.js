@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { installFetchShim } from "./fetch.js";
 
 const BROWSER_UA =
@@ -82,5 +82,37 @@ describe("relayed cross-origin request headers", () => {
     });
 
     expect(headers).toMatchObject(caller);
+  });
+});
+
+describe("the proxied-request log line", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete globalThis.window;
+
+    if (realNavigator) {
+      Object.defineProperty(globalThis, "navigator", realNavigator);
+    } else {
+      delete globalThis.navigator;
+    }
+  });
+
+  it("shows the origin and path without the query string or fragment", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    install();
+
+    await window.fetch(
+      "https://example.test/api/thing?key=SECRET&sig=abc#frag",
+    );
+
+    const line = log.mock.calls.find((args) =>
+      String(args[0]).startsWith("[shim:fetch]"),
+    );
+
+    expect(line).toEqual([
+      "[shim:fetch] Proxying cross-origin:",
+      "GET",
+      "https://example.test/api/thing",
+    ]);
   });
 });

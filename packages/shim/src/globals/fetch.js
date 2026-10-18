@@ -2,6 +2,16 @@ import { isSameOrigin, isDirectFetchHost } from "../util/url.js";
 import { proxyFetch } from "../util/proxy.js";
 import { desktopHeaders } from "../util/desktop-identity.js";
 
+function redactUrl(url) {
+  try {
+    const parsed = new URL(url);
+
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return url.split(/[?#]/)[0];
+  }
+}
+
 function hasHeader(headers, name) {
   return Object.keys(headers).some(
     (key) => key.toLowerCase() === name.toLowerCase(),
@@ -108,8 +118,7 @@ export function installFetchShim() {
         body = String(init.body);
       }
     }
-
-    console.log("[shim:fetch] Proxying cross-origin:", method, url);
+    console.log("[shim:fetch] Proxying cross-origin:", method, redactUrl(url));
 
     let result;
 

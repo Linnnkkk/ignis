@@ -21,11 +21,14 @@ const TEXT_EXTENSIONS = new Set([
   ".svg",
 ]);
 
-const MAX_FILE_BYTES = 512 * 1024;
+export const MAX_FILE_BYTES = 512 * 1024;
+
 // Plugin bundles run a few MB and Obsidian needs them at boot, so priority accepts larger files than bulk.
 const PRIORITY_MAX_FILE_BYTES = 4 * 1024 * 1024;
 const BATCH_SIZE = 50;
 const BATCH_CONCURRENCY = 6; // concurrent in-flight batch-reads, to pipeline requests and hide round-trip latency
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+
 // Cap a slice's file count so a vault or plugin with tens of thousands of small files cannot turn boot into one request per file.
 const MAX_FILES = 4000;
 const PREFETCH_CACHE_FRACTION = 0.75; // leave cache headroom so on-demand reads do not immediately evict prefetched content
@@ -33,7 +36,7 @@ const PREFETCH_MAX_BYTES = 100 * 1024 * 1024; // ceiling on boot prefetch I/O re
 const PREFETCH_MIN_BYTES = 8 * 1024 * 1024; // floor; a cache below 8 MB is clamped to its own size instead
 const DEFAULT_CACHE_BYTES = 50 * 1024 * 1024;
 
-function isTextPath(path) {
+export function isTextPath(path) {
   const dot = path.lastIndexOf(".");
 
   if (dot < 0) {
@@ -63,7 +66,7 @@ function isDataJsonPath(path) {
 }
 
 // Plugin-internal files (icon packs, fonts) are read on demand, never at boot, and a plugin can bundle tens of thousands, so bulk skips them.
-function isPluginAsset(path) {
+export function isPluginAsset(path) {
   return (
     /^\.obsidian\/plugins\/[^/]+\//.test(path) &&
     !isPriorityPath(path) &&
@@ -166,7 +169,7 @@ function selectPrefetchTargets(tree, totalBudget) {
   return { priority, bulk };
 }
 
-async function fetchBatch(vaultId, paths) {
+export async function fetchBatch(vaultId, paths) {
   const res = await fetch("/api/fs/batch-read", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -178,6 +181,18 @@ async function fetchBatch(vaultId, paths) {
   }
 
   return res.json();
+}
+
+async function fetchBatchWithRetries(vaultId, paths) {
+  for (const delay of RETRY_DELAYS_MS) {
+    try {
+      return await fetchBatch(vaultId, paths);
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  return fetchBatch(vaultId, paths);
 }
 
 async function runBatches(vaultId, slice, contentCache, label, onProgress) {
@@ -200,19 +215,11 @@ async function runBatches(vaultId, slice, contentCache, label, onProgress) {
     batches.push(slice.files.slice(i, i + BATCH_SIZE));
   }
 
-  // Several workers pull batches off a shared cursor until all batches are processed or one fails.
   let cursor = 0;
-  let aborted = false;
 
   async function worker() {
-    while (!aborted) {
-      const idx = cursor++;
-
-      if (idx >= batches.length) {
-        return;
-      }
-
-      const batch = batches[idx];
+    while (cursor < batches.length) {
+      const batch = batches[cursor++];
       const pathUpdatesBefore = new Map(
         batch.map((f) => [f.path, contentCache.pathUpdates(f.path)]),
       );
@@ -220,14 +227,13 @@ async function runBatches(vaultId, slice, contentCache, label, onProgress) {
       let result;
 
       try {
-        result = await fetchBatch(
+        result = await fetchBatchWithRetries(
           vaultId,
           batch.map((f) => f.path),
         );
       } catch (e) {
         console.warn(`[ignis] Prefetch ${label} batch failed:`, e.message);
-        aborted = true;
-        return;
+        continue;
       }
 
       for (const [path, content] of Object.entries(result.files || {})) {
@@ -260,7 +266,6 @@ async function runBatches(vaultId, slice, contentCache, label, onProgress) {
   );
 }
 
-// The priority promise resolves once the boot-critical files land (or are abandoned on a batch failure), so it is always safe to await.
 export function prefetchVaultContent(
   vaultId,
   tree,

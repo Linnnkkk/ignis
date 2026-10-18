@@ -301,7 +301,9 @@ export function initialize() {
     window.__ignisBooting = true;
 
     // Chain workspace/appearance resolution onto readiness so its config reads hit the warm priority slice instead of the network.
-    window.__ignisBootReady = priority.then(resolveWorkspaceAndAppearance);
+    window.__ignisBootReady = priority
+      .catch(() => {})
+      .then(resolveWorkspaceAndAppearance);
   } else {
     initVaultConfigFallback();
     initVaultListFallback();

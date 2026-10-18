@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.18] - Karm (2026-10-17)
+
+### Fixed
+
+- Search performance improved when notes are missing from content cache.
+- `requestUrl` sends the `contentType` it is given.
+- Direct-fetch hosts apply to every plugin request.
+
+### Security
+
+- Request headers, bodies, and URL query strings are no longer written to the browser console.
+
 ## [0.8.17] - Karm (2026-10-11)
 
 ### Added

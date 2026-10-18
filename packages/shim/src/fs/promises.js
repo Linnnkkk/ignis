@@ -20,6 +20,8 @@ import { hasVirtualFile, getVirtualFile } from "./virtual-files.js";
 import { realpathSync } from "./realpath.js";
 import { initWriteDurability, onFailure } from "./write-durability.js";
 import { createUtimes } from "./utimes.js";
+import { createReadAhead } from "./read-ahead.js";
+import { isTextPath } from "./indexer-prefetch.js";
 
 export function createFsPromises(metadataCache, contentCache, transport) {
   initWriteCoalescer(transport);
@@ -32,6 +34,7 @@ export function createFsPromises(metadataCache, contentCache, transport) {
   });
 
   const commitUtimes = createUtimes(metadataCache, transport);
+  const readAhead = createReadAhead(metadataCache, contentCache);
 
   return {
     async stat(path) {
@@ -124,6 +127,19 @@ export function createFsPromises(metadataCache, contentCache, transport) {
       }
 
       if (result === null) {
+        const pendingBatch = readAhead.inFlightBatchFor(resolved);
+
+        if (pendingBatch) {
+          await pendingBatch;
+          result = contentCache.get(resolved);
+        }
+      }
+
+      if (result === null) {
+        if (isTextPath(resolved) && !redirected) {
+          readAhead.fetchAround(resolved);
+        }
+
         const pathUpdatesBefore = contentCache.pathUpdates(resolved);
 
         try {

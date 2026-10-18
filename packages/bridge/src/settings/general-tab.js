@@ -208,7 +208,7 @@ function serverSettingsGroups(tab) {
         ...proxyAccessFields(tab),
         listField(tab, {
           name: "Direct-fetch hosts",
-          desc: "Hosts the browser fetches directly, bypassing the proxy. Only for hosts that allow cross-origin browser requests (CORS);  everything else goes through the proxy. Applies after reload.",
+          desc: "Hosts the browser fetches directly, bypassing the proxy. Only for hosts that allow cross-origin browser requests (CORS); everything else goes through the proxy. Applies after reload.",
           key: "directFetchHosts",
           modal: {
             placeholder: "api.example.com",

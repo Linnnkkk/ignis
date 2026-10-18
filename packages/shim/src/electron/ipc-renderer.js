@@ -1,6 +1,6 @@
 import { showVaultManager } from "../ui-registry.js";
 import { vaultService } from "@ignis/services";
-import { proxyFetch } from "../util/proxy.js";
+import { sendRequest } from "../util/send-request.js";
 
 const listeners = new Map();
 
@@ -153,7 +153,7 @@ const syncHandlers = {
 
 async function handleRequestUrl(requestId, request) {
   try {
-    const result = await proxyFetch({
+    const result = await sendRequest({
       url: request.url,
       method: request.method,
       headers: request.headers,
@@ -176,7 +176,8 @@ async function handleRequestUrl(requestId, request) {
 
 export const ipcRenderer = {
   send(channel, ...args) {
-    console.log("[shim:ipcRenderer] send:", channel, args);
+    // skip args, avoids leaking sensitive headers and fields
+    console.log("[shim:ipcRenderer] send:", channel);
 
     if (channel === "context-menu") {
       queueMicrotask(() =>
@@ -217,7 +218,7 @@ export const ipcRenderer = {
   },
 
   sendSync(channel, ...args) {
-    console.log("[shim:ipcRenderer] sendSync:", channel, args);
+    console.log("[shim:ipcRenderer] sendSync:", channel);
 
     if (syncHandlers[channel]) {
       return syncHandlers[channel](...args);

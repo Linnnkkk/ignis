@@ -5,7 +5,7 @@
 import { arrayBufferToBase64, base64ToArrayBuffer } from "./base64.js";
 import { isProxyBlock, reportProxyBlock } from "./proxy-block.js";
 
-export async function proxyFetch({ url, method, headers, body, contentType }) {
+export async function proxyFetch({ url, method, headers, body }) {
   let encodedBody = null;
   let binary = false;
 
@@ -29,10 +29,6 @@ export async function proxyFetch({ url, method, headers, body, contentType }) {
     body: encodedBody,
     binary,
   };
-
-  if (contentType !== undefined) {
-    payload.contentType = contentType;
-  }
 
   // Use native fetch to avoid an unnecessary call through the shim. proxy is already same origin.
   const nativeFetch = window.__originalFetch || fetch;
