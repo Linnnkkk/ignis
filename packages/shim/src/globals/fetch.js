@@ -27,11 +27,11 @@ export function installFetchShim() {
     try {
       const r = await originalFetch(input, init);
       if (!r.ok) {
-        console.error("[shim:fetch] native !ok " + r.status + " " + String(typeof input === "string" ? input : (input && input.url) || input));
+        console.error("[shim:fetch] native !ok " + r.status + " " + redactUrl(String(typeof input === "string" ? input : (input && input.url) || input)));
       }
       return r;
     } catch (e) {
-      console.error("[shim:fetch] native THREW " + String(typeof input === "string" ? input : (input && input.url) || input) + " : " + (e && e.message));
+      console.error("[shim:fetch] native THREW " + redactUrl(String(typeof input === "string" ? input : (input && input.url) || input)) + " : " + (e && e.message));
       throw e;
     }
   };
@@ -48,8 +48,6 @@ export function installFetchShim() {
     } else {
       url = String(input);
     }
-    // ★ 排障：所有 fetch 调用无条件现形（定位那 3 个 NetworkError 的真身）
-    console.log("[shim:fetch] CALL " + url.slice(0, 150));
 
     // Obsidian 1.13+ 请求 app://obsidian.md/...（Electron 自定义协议读自带资源）。
     // 不让它们走跨域代理（server 代理只认 http/https 会 400 → NetworkError 断启动链）。
@@ -65,12 +63,12 @@ export function installFetchShim() {
       return originalFetch(input, init).then(
         (r) => {
           if (!r.ok) {
-            console.error("[shim:fetch] SAME-ORIGIN !ok " + r.status + " " + url.slice(0, 120));
+            console.error("[shim:fetch] SAME-ORIGIN !ok " + r.status + " " + redactUrl(url));
           }
           return r;
         },
         (e) => {
-          console.error("[shim:fetch] SAME-ORIGIN THREW " + url.slice(0, 120) + " : " + (e && e.message));
+          console.error("[shim:fetch] SAME-ORIGIN THREW " + redactUrl(url) + " : " + (e && e.message));
           throw e;
         }
       );
