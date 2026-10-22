@@ -644,4 +644,22 @@ describe("utimes route", () => {
 
     expect(tree["d"]).toMatchObject({ type: "directory" });
   });
+
+  it("serves an ETag and answers a matching conditional read with 304", async () => {
+    await postJson("writeFile", { path: "etag-note.md", content: "hello" }).then((r) => expect(r.ok).toBe(true));
+    const first = await fetch(`${base}/api/fs/readFile?path=etag-note.md&encoding=utf8`);
+    expect(first.status).toBe(200);
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+    const cached = await fetch(`${base}/api/fs/readFile?path=etag-note.md&encoding=utf8`, {
+      headers: { "If-None-Match": etag },
+    });
+    expect(cached.status).toBe(304);
+    // A change must bust the ETag so the client sees fresh content.
+    await postJson("writeFile", { path: "etag-note.md", content: "hello again" });
+    const changed = await fetch(`${base}/api/fs/readFile?path=etag-note.md&encoding=utf8`, {
+      headers: { "If-None-Match": etag },
+    });
+    expect(changed.status).toBe(200);
+  });
 });

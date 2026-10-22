@@ -118,6 +118,9 @@ function requestSync(method, endpoint, params = {}) {
   return xhr;
 }
 
+// path -> 最近一次 readFile 响应里的 ETag，用于写入持久缓存
+const lastEtags = new Map();
+
 export const transport = {
   async fetchTree(etag) {
     const headers = etag ? { "If-None-Match": etag } : undefined;
@@ -134,11 +137,21 @@ export const transport = {
     return requestJson("GET", "/stat", { path: normPath(path) });
   },
 
-  async readFile(path, encoding) {
-    const res = await request("GET", "/readFile", {
-      path: normPath(path),
-      encoding: encoding || "",
-    });
+  async readFile(path, encoding, etag) {
+    const headers = etag ? { "If-None-Match": etag } : undefined;
+    const res = await request(
+      "GET",
+      "/readFile",
+      { path: normPath(path), encoding: encoding || "" },
+      headers,
+    );
+
+    lastEtags.set(normPath(path), res.headers && res.headers.get ? res.headers.get("ETag") || "" : "");
+
+    // 304：内容没变，调用方用本地缓存正文，不重新下载。
+    if (res.status === 304) {
+      return null;
+    }
 
     if (encoding === "utf8" || encoding === "utf-8") {
       return res.text();
@@ -146,6 +159,10 @@ export const transport = {
 
     const buf = await res.arrayBuffer();
     return new Uint8Array(buf);
+  },
+
+  lastEtag(path) {
+    return lastEtags.get(normPath(path)) || "";
   },
 
   async writeFile(path, content, encoding) {

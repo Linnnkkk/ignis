@@ -42530,6 +42530,17 @@ var require_digest_auth = __commonJS({
     function md5(s) {
       return crypto.createHash("md5").update(s).digest("hex");
     }
+    function decodeHeaderText(value) {
+      if (!value || !/[\u0080-\u00ff]/.test(value)) {
+        return value;
+      }
+      try {
+        const restored = Buffer.from(value, "latin1").toString("utf8");
+        return restored.indexOf("\uFFFD") >= 0 ? value : restored;
+      } catch (e) {
+        return value;
+      }
+    }
     function isLoopback(ip) {
       return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
     }
@@ -42591,14 +42602,19 @@ var require_digest_auth = __commonJS({
           return res.status(401).send("401 Stale Nonce");
         }
         const ha1 = md5(creds.user + ":" + REALM + ":" + creds.pass);
+        const ha1Latin1 = md5(Buffer.from(creds.user, "utf8").toString("latin1") + ":" + REALM + ":" + creds.pass);
         const ha2 = md5(req.method + ":" + p.uri);
-        let expected;
-        if (p.qop === "auth" && p.nc && p.cnonce) {
-          expected = md5(ha1 + ":" + p.nonce + ":" + p.nc + ":" + p.cnonce + ":auth:" + ha2);
-        } else {
-          expected = md5(ha1 + ":" + p.nonce + ":" + ha2);
-        }
-        if (p.username !== creds.user || expected !== p.response) {
+        const compute = (base) => {
+          if (p.qop === "auth" && p.nc && p.cnonce) {
+            return md5(base + ":" + p.nonce + ":" + p.nc + ":" + p.cnonce + ":auth:" + ha2);
+          }
+          return md5(base + ":" + p.nonce + ":" + ha2);
+        };
+        const expected = compute(ha1);
+        const expectedLatin1 = compute(ha1Latin1);
+        const suppliedUser = decodeHeaderText(p.username);
+        const userNameOk = suppliedUser === creds.user || p.username === creds.user;
+        if (!userNameOk || expected !== p.response && expectedLatin1 !== p.response) {
           recordFailure(ip, now);
           res.set("WWW-Authenticate", challenge(false));
           return res.status(401).send("401 Unauthorized");
@@ -68820,6 +68836,12 @@ var require_fs = __commonJS({
           return;
         }
         const encoding = req.query.encoding;
+        const etag = '"' + stat.size.toString(16) + "-" + Math.floor(stat.mtimeMs).toString(16) + '"';
+        res.set("ETag", etag);
+        res.set("Cache-Control", "private, no-cache");
+        if (req.headers["if-none-match"] === etag) {
+          return res.status(304).end();
+        }
         if (encoding === "utf8" || encoding === "utf-8") {
           const data = await fs2.promises.readFile(resolved, "utf-8");
           res.type("text/plain").send(data);

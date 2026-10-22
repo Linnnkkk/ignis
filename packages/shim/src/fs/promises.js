@@ -22,6 +22,7 @@ import { initWriteDurability, onFailure } from "./write-durability.js";
 import { createUtimes } from "./utimes.js";
 import { createReadAhead } from "./read-ahead.js";
 import { isTextPath } from "./indexer-prefetch.js";
+import { isCacheablePath, getCachedEntry, putCachedEntry } from "./persistent-cache.js";
 
 export function createFsPromises(metadataCache, contentCache, transport) {
   initWriteCoalescer(transport);
@@ -142,14 +143,26 @@ export function createFsPromises(metadataCache, contentCache, transport) {
 
         const pathUpdatesBefore = contentCache.pathUpdates(resolved);
 
+        // 插件 / 主题 / snippets 是"装好的代码"，跨会话复用本地持久缓存：
+        // 先带 If-None-Match，服务器回 304 就不必重新下载正文（远程模式启动明显更慢的主因）。
+        const cacheable = wantText && isCacheablePath(resolved) && !redirected;
+        const cachedEntry = cacheable ? await getCachedEntry(resolved, window.__currentVaultId || '') : null;
+
         try {
-          result = await transport.readFile(resolved, encoding);
+          result = await transport.readFile(resolved, encoding, cachedEntry ? cachedEntry.etag : "");
         } catch (e) {
           if (redirected && e.code === "ENOENT") {
             result = await transport.readFile(path, encoding);
           } else {
             throw e;
           }
+        }
+
+        if (result === null && cachedEntry) {
+          // 304：正文未变化，直接用缓存内容
+          result = cachedEntry.body;
+        } else if (cacheable && typeof result === "string") {
+          putCachedEntry(resolved, transport.lastEtag(resolved), result, window.__currentVaultId || '').catch(() => {});
         }
 
         contentCache.setFromServer(resolved, result, pathUpdatesBefore);

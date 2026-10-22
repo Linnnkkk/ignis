@@ -9,6 +9,7 @@ import {
   installClipboardShim,
   installMediaDevicesShim,
   installSubtleShim,
+  installOnlineShim,
 } from "./web-apis.js";
 
 function installProcess() {
@@ -40,6 +41,7 @@ function installContextMenuFix() {
 }
 
 export function installGlobals() {
+  installOnlineShim();
   installGlobalAlias();
   installProcess();
   installBuffer();

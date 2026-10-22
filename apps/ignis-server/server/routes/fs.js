@@ -215,6 +215,17 @@ router.get("/readFile", async (req, res) => {
 
     const encoding = req.query.encoding;
 
+    // 插件（.js/.css）和其它静态内容用 ETag + 条件请求：文件没变就回 304，
+    // 浏览器不必重新下载。之前这里没有任何缓存头，每次打开远程库都要把插件
+    // 重新拉一遍，这也是反复打开很慢的主要原因。笔记正文同样受益：改动后
+    // mtime/size 变化自然让 ETag 失效。
+    const etag = '"' + stat.size.toString(16) + "-" + Math.floor(stat.mtimeMs).toString(16) + '"';
+    res.set("ETag", etag);
+    res.set("Cache-Control", "private, no-cache");
+    if (req.headers["if-none-match"] === etag) {
+      return res.status(304).end();
+    }
+
     if (encoding === "utf8" || encoding === "utf-8") {
       const data = await fs.promises.readFile(resolved, "utf-8");
 

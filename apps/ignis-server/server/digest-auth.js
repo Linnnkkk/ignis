@@ -60,6 +60,22 @@ function md5(s) {
   return crypto.createHash("md5").update(s).digest("hex");
 }
 
+// HTTP 头里的非 ASCII 值（比如中文用户名）在 Node 里是按 latin1 逐字节解出来的，
+// 而 HA1 必须用浏览器原本的 UTF-8 文本计算。这里把 latin1 字节还原成 UTF-8。
+// 纯 ASCII 输入原样返回，不影响英文账号。
+function decodeHeaderText(value) {
+  if (!value || !/[\u0080-\u00ff]/.test(value)) {
+    return value;
+  }
+  try {
+    const restored = Buffer.from(value, "latin1").toString("utf8");
+    // 还原失败会带 U+FFFD；此时保留原值，避免把本来就正确的串弄坏
+    return restored.indexOf("\ufffd") >= 0 ? value : restored;
+  } catch (e) {
+    return value;
+  }
+}
+
 function isLoopback(ip) {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
@@ -138,15 +154,22 @@ function createDigestAuth() {
     }
 
     const ha1 = md5(creds.user + ":" + REALM + ":" + creds.pass);
+    // 浏览器可能用原始 UTF-8 文本算 HA1，也可能用 latin1 字节算；两种都接受。
+    const ha1Latin1 = md5(Buffer.from(creds.user, "utf8").toString("latin1") + ":" + REALM + ":" + creds.pass);
     const ha2 = md5(req.method + ":" + p.uri);
-    let expected;
-    if (p.qop === "auth" && p.nc && p.cnonce) {
-      expected = md5(ha1 + ":" + p.nonce + ":" + p.nc + ":" + p.cnonce + ":auth:" + ha2);
-    } else {
-      expected = md5(ha1 + ":" + p.nonce + ":" + ha2);
-    }
+    const compute = (base) => {
+      if (p.qop === "auth" && p.nc && p.cnonce) {
+        return md5(base + ":" + p.nonce + ":" + p.nc + ":" + p.cnonce + ":auth:" + ha2);
+      }
+      return md5(base + ":" + p.nonce + ":" + ha2);
+    };
+    const expected = compute(ha1);
+    const expectedLatin1 = compute(ha1Latin1);
 
-    if (p.username !== creds.user || expected !== p.response) {
+    const suppliedUser = decodeHeaderText(p.username);
+    // 用户名也接受原样与还原两种形态，避免不同客户端/中间层的编码差异
+    const userNameOk = suppliedUser === creds.user || p.username === creds.user;
+    if (!userNameOk || (expected !== p.response && expectedLatin1 !== p.response)) {
       recordFailure(ip, now);
       res.set("WWW-Authenticate", challenge(false));
       return res.status(401).send("401 Unauthorized");

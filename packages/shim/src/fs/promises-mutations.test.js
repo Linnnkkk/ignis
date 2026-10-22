@@ -178,6 +178,7 @@ describe("promises readFile existence", () => {
     expect(deps.transport.readFile).toHaveBeenCalledWith(
       ".obsidian/workspace.Work.json",
       "utf8",
+      "",
     );
   });
 });

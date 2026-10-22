@@ -1,6 +1,8 @@
 // Pre-fetches vault file contents into the content cache before Obsidian boots, so its startup reads hit the cache instead of the network.
 // The priority slice is awaited and gates boot; the bulk slice streams afterward without blocking it.
 
+import { isCacheablePath, readCachedAsset } from "./persistent-cache.js";
+
 const TEXT_EXTENSIONS = new Set([
   ".md",
   ".markdown",
@@ -209,10 +211,35 @@ async function runBatches(vaultId, slice, contentCache, label, onProgress) {
     onProgress(0, slice.bytes);
   }
 
+  const assets = slice.files.filter((f) => isCacheablePath(f.path));
+  const batchFiles = slice.files.filter((f) => !isCacheablePath(f.path));
+  let assetCursor = 0;
+
+  async function assetWorker() {
+    while (assetCursor < assets.length) {
+      const file = assets[assetCursor++];
+      const updatesBefore = contentCache.pathUpdates(file.path);
+      try {
+        const content = await readCachedAsset(vaultId, file.path);
+        if (contentCache.setFromServer(file.path, content, updatesBefore)) cached++;
+        received += file.size;
+        if (onProgress) onProgress(received, slice.bytes);
+      } catch {
+        // No offline/stale fallback. Batch may still succeed if conditional reads are unavailable.
+        batchFiles.push(file);
+      }
+    }
+  }
+
+  await Promise.all(Array.from(
+    { length: Math.min(BATCH_CONCURRENCY, assets.length) },
+    () => assetWorker(),
+  ));
+
   const batches = [];
 
-  for (let i = 0; i < slice.files.length; i += BATCH_SIZE) {
-    batches.push(slice.files.slice(i, i + BATCH_SIZE));
+  for (let i = 0; i < batchFiles.length; i += BATCH_SIZE) {
+    batches.push(batchFiles.slice(i, i + BATCH_SIZE));
   }
 
   let cursor = 0;

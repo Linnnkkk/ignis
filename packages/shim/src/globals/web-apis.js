@@ -203,3 +203,16 @@ export function installSubtleShim() {
     });
   } catch {}
 }
+
+// Obsidian 的插件更新检查先看 navigator.onLine，false 就直接提示"网络未连接"，
+// 连请求都不发。我们运行在本地壳的 WebView 里（127.0.0.1），该值会被判成离线；
+// 而同一库用桌面浏览器打开时它是 true，所以只有本地模式会撞上。
+// 这里把 onLine 固定为可用：真正的连通失败仍由 fetch 报错体现，不会掩盖服务器问题。
+export function installOnlineShim() {
+  try {
+    Object.defineProperty(navigator, "onLine", {
+      configurable: true,
+      get: () => true,
+    });
+  } catch {}
+}
