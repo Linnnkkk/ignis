@@ -323,6 +323,7 @@ vaultLifecycle.setWss(wss);
 
 // 伺服器模式：动态 serverB（0.0.0.0 + Digest）管理 API（仅回环，ArkTS 壳层调用）
 require("./lan-share").setupLanShare(app, wss);
+const aiLanService = require("./ai-lan-admin").setupAiLan(app, config);
 
 const metadataChannel = createMetadataChannel(wss);
 
@@ -365,6 +366,7 @@ writeCoalescer.onFlushGiveUp((absPath) => {
 async function gracefulShutdown(signal) {
   console.log(`\n[ignis] Received ${signal}, shutting down gracefully...`);
 
+  await aiLanService.disable();
   await flushAll();
   await shutdownPlugins();
 
