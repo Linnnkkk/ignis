@@ -157,6 +157,39 @@ describe("AI-LAN service", () => {
     expect(fs.readFileSync(path.join(ctx.vault, "fenced.md"), "utf8")).toBe("before");
   });
 
+  it.each(['writeFileSync', 'renameSync'])("fails closed when revocation %s fails, including later enable", async (operation) => {
+    const ctx = setup();
+    const { status, cert } = await start(ctx);
+    const token = await pair(ctx, status.port, cert, ctx.service.createPairing().pairingCode);
+    const pairing = ctx.service.createPairing();
+    const clientsFile = path.join(ctx.root, 'data', 'ai-lan', 'clients.json');
+    const grants = fs.readFileSync(clientsFile, 'utf8');
+    const original = fs[operation];
+    const failure = vi.spyOn(fs, operation).mockImplementation((...args) => {
+      if ((operation === 'renameSync' && args[1] === clientsFile) ||
+          (operation === 'writeFileSync' && String(args[0]).startsWith(clientsFile + '.'))) {
+        throw Object.assign(new Error('sensitive filesystem path'), { code: 'EIO' });
+      }
+      return original(...args);
+    });
+    expect(() => ctx.service.revokeClients()).toThrow(expect.objectContaining({ code: 'REVOCATION_FAILED' }));
+    expect(ctx.service.status()).toMatchObject({ running: false, pairedClients: 0, pairingExpiresAt: 0 });
+    expect(fs.readFileSync(clientsFile, 'utf8')).toBe(grants);
+    expect(() => ctx.service.createPairing()).toThrow();
+    const call = () => request(status.port, cert, '/rpc', { token, body: { method: 'vaults' } });
+    expect((await call()).status).toBe(503);
+    expect((await request(status.port, cert, '/pair', { body: { clientName: 'old code', pairingCode: pairing.pairingCode } })).status).toBe(503);
+    await expect(ctx.service.enable()).rejects.toMatchObject({ code: 'REVOCATION_FAILED' });
+    expect(ctx.service.status().pairedClients).toBe(0);
+    await ctx.service.disable();
+    await expect(ctx.service.enable()).rejects.toMatchObject({ code: 'REVOCATION_FAILED' });
+    failure.mockRestore();
+    const recovered = await ctx.service.enable();
+    expect(recovered).toMatchObject({ deviceId: status.deviceId, fingerprint: status.fingerprint, pairedClients: 0 });
+    expect(JSON.parse(fs.readFileSync(clientsFile, 'utf8'))).toEqual([]);
+    expect((await request(recovered.port, cert, '/rpc', { token, body: { method: 'vaults' } })).status).toBe(401);
+  });
+
   it("expires pairing codes and enforces conditional create/edit/append writes", async () => {
     const ctx = setup();
     const { status, cert } = await start(ctx);
@@ -170,6 +203,7 @@ describe("AI-LAN service", () => {
     const token = await pair(ctx, status.port, cert, ctx.service.createPairing().pairingCode);
     let created = await request(status.port, cert, "/rpc", { body: { method: "create", params: { vaultId: "main", path: "note.md", content: "first" } }, token });
     expect(created.status).toBe(200);
+    expect(created.body.result).toEqual({ path: 'note.md', revision: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(fs.readFileSync(path.join(ctx.vault, "note.md"), "utf8")).toBe("first");
     const stale = await request(status.port, cert, "/rpc", { body: { method: "edit", params: { vaultId: "main", path: "note.md", content: "lost", expectedRevision: "0".repeat(64) } }, token });
     expect(stale.status).toBe(409);
@@ -207,6 +241,63 @@ describe("AI-LAN service", () => {
     expect((await call('edit', { content: 'denied', expectedRevision: restored.body.result.revision })).status).toBe(403);
     ctx.service.setAccess({ vaultIds: [], allowWrite: false });
     expect((await call('read')).status).toBe(403);
+  });
+
+  it('reports committed revisions with a fixed cache warning without replaying writes or logging errors', async () => {
+    const ctx = setup();
+    const { status, cert } = await start(ctx);
+    const token = await pair(ctx, status.port, cert, ctx.service.createPairing().pairingCode);
+    const call = (method, params = {}) => request(status.port, cert, '/rpc', { token, body: { method, params: { vaultId: 'main', path: 'private.md', ...params } } });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const loggedError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    ctx.cache.applyMutation.mockRejectedValue(new Error('private.md secret content'))
+      .mockImplementationOnce(() => { throw new Error('private.md secret content'); });
+    const write = vi.spyOn(fs, 'writeFileSync');
+    const rename = vi.spyOn(fs, 'renameSync');
+    let revision;
+    let backupId;
+    for (const [method, params, content] of [
+      ['create', { content: 'secret' }, 'secret'],
+      ['append', { content: '!' }, 'secret!'],
+      ['edit', { content: 'changed' }, 'changed'],
+      ['patch', { oldText: 'changed', newText: 'patched' }, 'patched'],
+      ['restore', {}, 'secret'],
+    ]) {
+      const response = await call(method, { ...params, expectedRevision: revision, ...(method === 'restore' ? { backupId } : {}) });
+      expect(response.status).toBe(200);
+      const actual = await call('read');
+      revision = actual.body.result.revision;
+      expect(response.body.result).toEqual({ path: 'private.md', revision, committed: true, warning: 'CACHE_REFRESH_FAILED' });
+      expect(actual.body.result.content).toBe(content);
+      if (method === 'append') backupId = (await call('backups')).body.result[0].backupId;
+    }
+    expect(ctx.cache.applyMutation).toHaveBeenCalledTimes(5);
+    expect(write.mock.calls.filter(([file]) => file === path.join(ctx.vault, 'private.md'))).toHaveLength(1);
+    expect(rename.mock.calls.filter(([, file]) => file === path.join(ctx.vault, 'private.md'))).toHaveLength(4);
+    expect((await call('backups')).body.result).toHaveLength(4);
+    expect(log).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(loggedError).not.toHaveBeenCalled();
+  });
+
+  it('normalizes backup lookup paths exactly like mutation paths', async () => {
+    const ctx = setup();
+    fs.mkdirSync(path.join(ctx.vault, 'folder'));
+    fs.writeFileSync(path.join(ctx.vault, 'folder', 'note.md'), 'before');
+    const { status, cert } = await start(ctx);
+    const token = await pair(ctx, status.port, cert, ctx.service.createPairing().pairingCode);
+    const call = (method, notePath, params = {}) => request(status.port, cert, '/rpc', { token, body: { method, params: { vaultId: 'main', path: notePath, ...params } } });
+    const original = await call('read', 'folder/note.md');
+    expect((await call('edit', './folder//./note.md', { content: 'after', expectedRevision: original.body.result.revision })).status).toBe(200);
+    const canonical = await call('backups', 'folder/note.md');
+    expect(canonical.body.result).toHaveLength(1);
+    for (const alias of ['./folder//note.md', 'folder/./note.md', 'folder//note.md/']) {
+      expect((await call('backups', alias)).body).toEqual(canonical.body);
+    }
+    for (const invalid of ['../folder/note.md', 'folder/.hidden.md', '/folder/note.md']) {
+      expect((await call('backups', invalid)).status).toBeGreaterThanOrEqual(400);
+    }
   });
 
   it('preserves original content if atomic replacement fails and keeps backup outside vault', async () => {

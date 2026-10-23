@@ -74813,6 +74813,7 @@ var require_ai_lan = __commonJS({
       const queries = createQueries({ scan: scanNotes, read, parseNote });
       let deviceId;
       let clients = [];
+      let revocationPending = false;
       let server2 = null;
       let discovery = null;
       let discoveryAvailable = false;
@@ -74837,8 +74838,8 @@ var require_ai_lan = __commonJS({
       }
       function status() {
         return {
-          running: !!server2 && accepting,
-          port: server2 && accepting ? port : 0,
+          running: !!server2 && accepting && !revocationPending,
+          port: server2 && accepting && !revocationPending ? port : 0,
           deviceId: deviceId || "",
           fingerprint: fingerprint || "",
           pairingExpiresAt: pairingSecret ? pairingExpiresAt : 0,
@@ -75004,7 +75005,7 @@ var require_ai_lan = __commonJS({
         return current;
       }
       function assertOpen() {
-        if (!accepting || shuttingDown)
+        if (!accepting || shuttingDown || revocationPending)
           throw error("UNAVAILABLE", "AI-LAN service is disabled");
       }
       function assertSession(generation, tokenHash) {
@@ -75153,6 +75154,7 @@ var require_ai_lan = __commonJS({
           throw error("FORBIDDEN", "Obsidian vault is read-only");
         const parts = cleanParts(params.path);
         const absolute = resolvePath(vault, parts, { allowMissingFinal: method === "create" });
+        let committedContent;
         if (method === "create") {
           if (typeof params.content !== "string" || Buffer.byteLength(params.content) > MAX_FILE_BYTES) {
             throw error("BAD_REQUEST", "Invalid content");
@@ -75160,6 +75162,7 @@ var require_ai_lan = __commonJS({
           if (!accepting)
             throw error("UNAVAILABLE", "AI-LAN service is disabled");
           fs2.writeFileSync(absolute, params.content, { encoding: "utf8", flag: "wx" });
+          committedContent = params.content;
         } else {
           if (typeof params.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(params.expectedRevision)) {
             throw error("BAD_REQUEST", "expectedRevision is required");
@@ -75180,38 +75183,43 @@ var require_ai_lan = __commonJS({
           const current = fs2.readFileSync(absolute, "utf8");
           if (sha256(current) !== params.expectedRevision)
             throw error("CONFLICT", "Revision does not match");
-          let content2 = method === "append" ? current + params.content : params.content;
+          let content = method === "append" ? current + params.content : params.content;
           if (method === "patch") {
             if (typeof params.oldText !== "string" || !params.oldText || typeof params.newText !== "string")
               throw error("BAD_REQUEST", "oldText and newText required");
             const first = current.indexOf(params.oldText);
             if (first < 0 || current.indexOf(params.oldText, first + 1) >= 0)
               throw error("CONFLICT", "oldText must match exactly once");
-            content2 = current.slice(0, first) + params.newText + current.slice(first + params.oldText.length);
+            content = current.slice(0, first) + params.newText + current.slice(first + params.oldText.length);
           }
           if (method === "restore")
-            content2 = backups.read({ vaultId: params.vaultId, path: parts.join("/"), backupId: params.backupId }).content;
-          if (typeof content2 !== "string")
+            content = backups.read({ vaultId: params.vaultId, path: parts.join("/"), backupId: params.backupId }).content;
+          if (typeof content !== "string")
             throw error("BAD_REQUEST", "Invalid content");
-          if (Buffer.byteLength(content2) > MAX_FILE_BYTES)
+          if (Buffer.byteLength(content) > MAX_FILE_BYTES)
             throw error("LIMIT_EXCEEDED", "File is too large");
           assertSession(generation, tokenHash);
           backups.save({ vaultId: params.vaultId, path: parts.join("/"), content: current, revision: sha256(current) });
           const temporary = path2.join(path2.dirname(absolute), `.ai-${crypto.randomUUID()}.tmp`);
           try {
-            fs2.writeFileSync(temporary, content2, { encoding: "utf8", mode: 384, flag: "wx" });
+            fs2.writeFileSync(temporary, content, { encoding: "utf8", mode: 384, flag: "wx" });
             fs2.renameSync(temporary, absolute);
+            committedContent = content;
           } finally {
             if (fs2.existsSync(temporary))
               fs2.unlinkSync(temporary);
           }
         }
-        const content = readCurrent(absolute);
-        await cache.applyMutation(vault.vaultId, {
-          type: method === "create" ? "created" : "modified",
-          path: parts.join("/")
-        });
-        return { path: parts.join("/"), revision: sha256(content) };
+        const result = { path: parts.join("/"), revision: sha256(committedContent) };
+        try {
+          await cache.applyMutation(vault.vaultId, {
+            type: method === "create" ? "created" : "modified",
+            path: parts.join("/")
+          });
+        } catch {
+          return { ...result, committed: true, warning: "CACHE_REFRESH_FAILED" };
+        }
+        return result;
       }
       async function rpc(method, params, tokenHash, generation) {
         requireObject(params);
@@ -75247,10 +75255,11 @@ var require_ai_lan = __commonJS({
             return queries.links(params);
           case "backlinks":
             return queries.backlinks(params);
-          case "backups":
+          case "backups": {
             currentVault(params.vaultId);
-            cleanParts(params.path);
-            return backups.list({ vaultId: params.vaultId, path: params.path });
+            const parts = cleanParts(params.path);
+            return backups.list({ vaultId: params.vaultId, path: parts.join("/") });
+          }
           case "patch":
           case "restore":
           case "create":
@@ -75301,10 +75310,10 @@ var require_ai_lan = __commonJS({
         if (req.method !== "POST" || !["/pair", "/rpc"].includes(pathname))
           return send(res, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
         try {
-          if (!accepting || shuttingDown)
+          if (!accepting || shuttingDown || revocationPending)
             throw error("UNAVAILABLE", "AI-LAN service is disabled");
           const body = requireObject(await readBody(req));
-          if (!accepting || shuttingDown)
+          if (!accepting || shuttingDown || revocationPending)
             throw error("UNAVAILABLE", "AI-LAN service is disabled");
           if (pathname === "/pair") {
             if (!rateAllowed())
@@ -75350,6 +75359,8 @@ var require_ai_lan = __commonJS({
       }
       async function enable({ ips = [], port: requestedPort } = {}) {
         return serialize(async () => {
+          if (revocationPending)
+            commitRevocation();
           shuttingDown = false;
           ensureIdentity();
           if (server2 && accepting)
@@ -75441,12 +75452,21 @@ var require_ai_lan = __commonJS({
           pairingExpiresAt
         };
       }
+      function commitRevocation() {
+        try {
+          saveClients();
+          revocationPending = false;
+        } catch {
+          throw error("REVOCATION_FAILED", "Client revocation could not be persisted; AI-LAN is blocked until retry succeeds");
+        }
+      }
       function revokeClients() {
         sessionGeneration++;
         clients = [];
-        saveClients();
         pairingSecret = null;
         pairingExpiresAt = 0;
+        revocationPending = true;
+        commitRevocation();
         return status();
       }
       function setAccess(policy) {

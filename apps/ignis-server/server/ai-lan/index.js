@@ -87,6 +87,8 @@ function createAiLanService(options = {}) {
 
   let deviceId;
   let clients = [];
+  // Never reload old grants after a failed revocation in this service instance.
+  let revocationPending = false;
   let server = null;
   let discovery = null;
   let discoveryAvailable = false;
@@ -112,8 +114,8 @@ function createAiLanService(options = {}) {
 
   function status() {
     return {
-      running: !!server && accepting,
-      port: server && accepting ? port : 0,
+      running: !!server && accepting && !revocationPending,
+      port: server && accepting && !revocationPending ? port : 0,
       deviceId: deviceId || "",
       fingerprint: fingerprint || "",
       pairingExpiresAt: pairingSecret ? pairingExpiresAt : 0,
@@ -273,7 +275,7 @@ function createAiLanService(options = {}) {
   }
 
   function assertOpen() {
-    if (!accepting || shuttingDown) throw error("UNAVAILABLE", "AI-LAN service is disabled");
+    if (!accepting || shuttingDown || revocationPending) throw error("UNAVAILABLE", "AI-LAN service is disabled");
   }
 
   function assertSession(generation, tokenHash) {
@@ -404,12 +406,14 @@ function createAiLanService(options = {}) {
     if (!access.allows(params.vaultId, true)) throw error('FORBIDDEN', 'Obsidian vault is read-only');
     const parts = cleanParts(params.path);
     const absolute = resolvePath(vault, parts, { allowMissingFinal: method === "create" });
+    let committedContent;
     if (method === "create") {
       if (typeof params.content !== "string" || Buffer.byteLength(params.content) > MAX_FILE_BYTES) {
         throw error("BAD_REQUEST", "Invalid content");
       }
       if (!accepting) throw error("UNAVAILABLE", "AI-LAN service is disabled");
       fs.writeFileSync(absolute, params.content, { encoding: "utf8", flag: "wx" });
+      committedContent = params.content;
     } else {
       if (typeof params.expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(params.expectedRevision)) {
         throw error("BAD_REQUEST", "expectedRevision is required");
@@ -445,16 +449,22 @@ function createAiLanService(options = {}) {
       try {
         fs.writeFileSync(temporary, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         fs.renameSync(temporary, absolute);
+        committedContent = content;
       } finally {
         if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
       }
     }
-    const content = readCurrent(absolute);
-    await cache.applyMutation(vault.vaultId, {
-      type: method === "create" ? "created" : "modified",
-      path: parts.join("/"),
-    });
-    return { path: parts.join("/"), revision: sha256(content) };
+    const result = { path: parts.join("/"), revision: sha256(committedContent) };
+    try {
+      await cache.applyMutation(vault.vaultId, {
+        type: method === "create" ? "created" : "modified",
+        path: parts.join("/"),
+      });
+    } catch {
+      // The file is already committed. Never replay the write or leak cache errors.
+      return { ...result, committed: true, warning: "CACHE_REFRESH_FAILED" };
+    }
+    return result;
   }
 
   async function rpc(method, params, tokenHash, generation) {
@@ -479,10 +489,11 @@ function createAiLanService(options = {}) {
       case 'tags': return queries.tags(params);
       case 'links': return queries.links(params);
       case 'backlinks': return queries.backlinks(params);
-      case 'backups':
+      case 'backups': {
         currentVault(params.vaultId);
-        cleanParts(params.path);
-        return backups.list({ vaultId: params.vaultId, path: params.path });
+        const parts = cleanParts(params.path);
+        return backups.list({ vaultId: params.vaultId, path: parts.join('/') });
+      }
       case 'patch':
       case 'restore':
       case "create":
@@ -526,9 +537,9 @@ function createAiLanService(options = {}) {
     const pathname = parsedUrl.pathname;
     if (req.method !== "POST" || !["/pair", "/rpc"].includes(pathname)) return send(res, 404, { error: { code: "NOT_FOUND", message: "Not found" } });
     try {
-      if (!accepting || shuttingDown) throw error("UNAVAILABLE", "AI-LAN service is disabled");
+      if (!accepting || shuttingDown || revocationPending) throw error("UNAVAILABLE", "AI-LAN service is disabled");
       const body = requireObject(await readBody(req));
-      if (!accepting || shuttingDown) throw error("UNAVAILABLE", "AI-LAN service is disabled");
+      if (!accepting || shuttingDown || revocationPending) throw error("UNAVAILABLE", "AI-LAN service is disabled");
       if (pathname === "/pair") {
         if (!rateAllowed()) throw error("RATE_LIMITED", "Pairing rate limit exceeded");
         if (!pairingSecret || Date.now() >= pairingExpiresAt) {
@@ -568,6 +579,7 @@ function createAiLanService(options = {}) {
 
   async function enable({ ips = [], port: requestedPort } = {}) {
     return serialize(async () => {
+      if (revocationPending) commitRevocation();
       shuttingDown = false;
       ensureIdentity();
       if (server && accepting) return status();
@@ -650,12 +662,22 @@ function createAiLanService(options = {}) {
     };
   }
 
+  function commitRevocation() {
+    try {
+      saveClients();
+      revocationPending = false;
+    } catch {
+      throw error('REVOCATION_FAILED', 'Client revocation could not be persisted; AI-LAN is blocked until retry succeeds');
+    }
+  }
+
   function revokeClients() {
     sessionGeneration++;
     clients = [];
-    saveClients();
     pairingSecret = null;
     pairingExpiresAt = 0;
+    revocationPending = true;
+    commitRevocation();
     return status();
   }
 
