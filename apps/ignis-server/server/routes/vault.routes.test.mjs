@@ -211,7 +211,7 @@ describe("runtime WebDAV disable", () => {
     return remoteVaults.list();
   }
 
-  it.each(["192.168.0.22", "::ffff:192.168.0.22", "203.0.113.1"])("rejects peer %s even with spoofed loopback forwarding", async (peer) => {
+  it.each(["192.0.2.22", "::ffff:192.0.2.22", "203.0.113.1"])("rejects peer %s even with spoofed loopback forwarding", async (peer) => {
     mount();
     const res = await disable({ "x-test-peer": peer, "x-forwarded-for": "127.0.0.1" });
     expect(res.status).toBe(403);
@@ -236,7 +236,7 @@ describe("runtime WebDAV disable", () => {
       fs.writeFileSync(path.join(dir, "marker.md"), "keep");
       await remoteWatcher.start(vaultId, { listTree: async () => ({ tree: {} }) });
     }
-    const res = await disable({ "x-test-peer": peer, "x-forwarded-for": "192.168.0.22" });
+    const res = await disable({ "x-test-peer": peer, "x-forwarded-for": "192.0.2.22" });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, disabled: ["remote-a", "remote-b"], localVault: VAULT_ID });
     expect(res.headers.get("cache-control")).toBe("no-store");
