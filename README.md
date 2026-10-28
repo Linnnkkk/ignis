@@ -122,3 +122,19 @@ Ignis is not affiliated with, endorsed by, or associated with Dynalist Inc. or O
 This work falls under the interoperability provisions of [Directive 2009/24/EC](https://eur-lex.europa.eu/eli/dir/2009/24/oj/eng) (the EU Software Directive), Article 6. See [LEGAL.md](LEGAL.md) for the full rationale.
 
 This project exists because its author uses Obsidian daily and wants to access it from a browser. There is no intent to harm Obsidian, Dynalist Inc., or their business. If you are a representative of Dynalist Inc. and wish to discuss this project, please reach out: ignis@thiefling.com
+
+## Vitreus fork: WebDAV vaults
+
+This fork supports local vaults alongside WebDAV-backed vaults. The device app supplies an in-memory `VITREUS_WEBDAV_RUNTIME` JSON value with a `vaults` array at startup; the registry consumes and removes the environment value. Standalone deployments can instead use `<DATA_ROOT>/remote-vaults.json` with entries containing `id`, `url`, `username`, and `password`. Keep that file private and out of version control. Changes require a restart.
+
+Remote placeholder roots live under `.ignis-remote-vaults`; a local vault of the same name blocks mounting. Vault listing marks remote entries with `remote: true`. Remote entries are not renamed or deleted by the vault manager; manage the connection in the host app. File and attachment routes use the WebDAV backend; remote changes are polled while listeners exist. Shim caches separate remote connection scopes and do not persist remote data as reusable local cache.
+
+WebDAV connectivity is not a guarantee of conflict-free concurrent editing. The host app owns entitlement and credential storage; do not put real account data in examples, tests, logs, or packaged artifacts. The npm AI connector version is unchanged by this work.
+
+Focused server verification:
+
+```bash
+npx vitest run apps/ignis-server/server/webdav apps/ignis-server/server/config.test.mjs apps/ignis-server/server/routes/fs.routes.test.mjs apps/ignis-server/server/routes/vault.routes.test.mjs apps/ignis-server/server/cache/cache.test.mjs
+```
+
+When changing the shim, rebuild it and the embedded archive before claiming vault-manager UI changes are delivered on-device. A source commit alone does not update the HarmonyOS bundle.

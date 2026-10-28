@@ -4,6 +4,8 @@ import { registerPathResolver, resolvePath, _reset } from "./transforms.js";
 import { isRecentSentOp } from "./echo-guard.js";
 import { MetadataCache } from "./metadata-cache.js";
 import { ContentCache } from "./content-cache.js";
+import * as durability from "./write-durability.js";
+import * as coalescer from "./write-coalescer.js";
 
 function makeDeps() {
   const store = new Map();
@@ -180,6 +182,71 @@ describe("promises readFile existence", () => {
       "utf8",
       "",
     );
+  });
+});
+
+describe("writeFile and unlink ordering", () => {
+  afterEach(() => {
+    coalescer._reset();
+    durability._reset();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("flushes a boot write before unlink and preserves a later write", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { __ignisBooting: true });
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    const disk = new Map();
+    const calls = [];
+    let release;
+    const transport = {
+      writeFile: vi.fn(async (path, data) => {
+        calls.push(data);
+        if (data === "before") await new Promise((resolve) => { release = resolve; });
+        disk.set(path, data);
+        return { mtime: 1, size: data.length };
+      }),
+      unlink: vi.fn(async (path) => { calls.push("unlink"); disk.delete(path); }),
+    };
+    const fs = createFsPromises(metadata, content, transport);
+    await fs.writeFile("note.md", "before");
+    const deletion = fs.unlink("note.md");
+    await fs.writeFile("note.md", "after");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(calls).toEqual(["before"]);
+    release();
+    await deletion;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual(["before", "unlink", "after"]);
+    expect(disk.get("note.md")).toBe("after");
+    expect(content.get("note.md")).toBe("after");
+    expect(metadata.get("note.md").size).toBe(5);
+  });
+
+  it("retires a failed write so retryAll and timers cannot resurrect it", async () => {
+    vi.useFakeTimers();
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    const disk = new Map([["note.md", "original"]]);
+    const transport = {
+      writeFile: vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (path, data) => {
+        disk.set(path, data);
+        return { mtime: 1, size: data.length };
+      }),
+      unlink: vi.fn(async (path) => { disk.delete(path); }),
+    };
+    const fs = createFsPromises(metadata, content, transport);
+    await fs.writeFile("note.md", "failed");
+    expect(durability.listPending()).toContain("note.md");
+    await fs.unlink("note.md");
+    durability.retryAll();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(transport.writeFile).toHaveBeenCalledTimes(1);
+    expect(disk.has("note.md")).toBe(false);
+    expect(metadata.get("note.md")).toBeNull();
+    expect(durability.listPending()).toEqual([]);
   });
 });
 

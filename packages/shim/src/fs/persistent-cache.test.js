@@ -76,6 +76,17 @@ describe("persistent file cache", () => {
     expect(await mod.getCachedEntry("/.obsidian/plugins/x/data.json")).toBeNull();
   });
 
+  it("caches large plugin assets up to 16 MiB using UTF-8 byte size", async () => {
+    const mod = await import("./persistent-cache.js");
+    const large = "x".repeat(12 * 1024 * 1024);
+    await mod.putCachedEntry(".obsidian/plugins/x/main.js", '"etag"', large, "v");
+    expect((await mod.getCachedEntry(".obsidian/plugins/x/main.js", "v")).body.length).toBe(large.length);
+
+    // Fewer than 16 MiB characters, but more than 16 MiB in UTF-8.
+    await mod.putCachedEntry(".obsidian/plugins/y/main.js", '"etag"', "中".repeat(6 * 1024 * 1024), "v");
+    expect(await mod.getCachedEntry(".obsidian/plugins/y/main.js", "v")).toBeNull();
+  });
+
   it("prefetch revalidates assets on the second boot without downloading their bodies", async () => {
     const { prefetchVaultContent } = await import("./indexer-prefetch.js");
     const { ContentCache } = await import("./content-cache.js");

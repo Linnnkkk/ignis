@@ -87,8 +87,9 @@ export async function putCachedEntry(path, etag, body, vaultId) {
     return;
   }
 
-  // 单个文件上限 8MB，避免把超大资源塞进数据库
-  if (body.length > 8 * 1024 * 1024) {
+  // Keep the persistent limit aligned with the priority prefetch limit. Count
+  // UTF-8 bytes, not JS characters, so non-ASCII content cannot bypass it.
+  if (new Blob([body]).size > 16 * 1024 * 1024) {
     return;
   }
 

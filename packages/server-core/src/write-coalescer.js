@@ -4,8 +4,16 @@
 //
 // Buffered writes respond to the HTTP client right away with synthetic mtime/size. Otherwise the browser's per-host connection cap blocks unrelated reads while writes sit in the buffer.
 
-const fs = require("fs");
 const path = require("path");
+
+// Filesystem used for the actual writes. Defaults to Node's fs; the app swaps
+// in a routing implementation at startup so vaults mounted over WebDAV get the
+// same coalescing behaviour as local ones. See webdav/vault-fs.js.
+let fs = require("fs");
+
+function setFs(impl) {
+  fs = impl || require("fs");
+}
 
 const FLUSH_TIMEOUT_MS = 10000;
 
@@ -411,5 +419,6 @@ module.exports = {
   onFlushGiveUp,
   onFlushSuccess,
   configure,
+  setFs,
   _reset,
 };

@@ -226,7 +226,7 @@
         {#each filteredVaults as vault (vault.id)}
           <ListItem
             primary={vault.name}
-            secondary={vault.path}
+            secondary={vault.remote ? "WebDAV远程库 · 请在 Vitreus 配置中管理" : vault.path}
             active={vault.id === currentVaultId}
             on:click={() => openVault(vault)}
           >
@@ -236,20 +236,27 @@
             <svelte:fragment slot="default">
               <span class="vault-name">
                 {vault.name}
+                {#if vault.remote}
+                  <span class="remote-label">WebDAV</span>
+                {/if}
                 {#if vault.id === currentVaultId}
                   <span class="active-label">(active)</span>
                   <span class="active-check">&#10003;</span>
                 {/if}
               </span>
-              <span class="vault-path">{vault.path}</span>
+              <span class="vault-path">
+                {vault.remote ? "WebDAV远程库 · 请在 Vitreus 配置中管理" : vault.path}
+              </span>
             </svelte:fragment>
             <svelte:fragment slot="action">
-              <PopoverMenu
-                open={openMenuId === vault.id}
-                items={menuItems}
-                on:toggle={() => toggleMenu(vault.id)}
-                on:select={(e) => onMenuSelect(vault, e.detail)}
-              />
+              {#if !vault.remote}
+                <PopoverMenu
+                  open={openMenuId === vault.id}
+                  items={menuItems}
+                  on:toggle={() => toggleMenu(vault.id)}
+                  on:select={(e) => onMenuSelect(vault, e.detail)}
+                />
+              {/if}
             </svelte:fragment>
           </ListItem>
         {/each}
@@ -394,6 +401,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .remote-label {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 0.25rem;
+    background: var(--background-secondary);
+    color: var(--text-accent);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    vertical-align: middle;
   }
 
   .active-label {

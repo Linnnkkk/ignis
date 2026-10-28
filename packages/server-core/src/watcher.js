@@ -296,6 +296,43 @@ function offWatcherRebuild(fn) {
   rebuildListeners.delete(fn);
 }
 
+// Dispatch an externally detected change. A WebDAV vault has no inotify
+// equivalent, so the app polls its tree and feeds differences through here;
+// listeners then receive exactly the same event shapes chokidar produces.
+function emitEvent(vaultId, event) {
+  const entry = vaultWatchers.get(vaultId);
+
+  if (!entry) {
+    return false;
+  }
+
+  cancelIdleStop(entry);
+
+  for (const fn of entry.listeners) {
+    try {
+      fn(event);
+    } catch (e) {
+      console.error("[watcher] Listener error:", e);
+    }
+  }
+
+  for (const fn of globalListeners) {
+    try {
+      fn(vaultId, event);
+    } catch (e) {
+      console.error("[watcher] Global listener error:", e);
+    }
+  }
+
+  return true;
+}
+
+function hasListeners(vaultId) {
+  const entry = vaultWatchers.get(vaultId);
+
+  return Boolean(entry && entry.listeners.size > 0);
+}
+
 function addListener(vaultId, fn) {
   const entry = vaultWatchers.get(vaultId);
 
@@ -340,6 +377,8 @@ function _reset() {
 
 module.exports = {
   configure,
+  emitEvent,
+  hasListeners,
   startWatching,
   stopWatching,
   stopAll,

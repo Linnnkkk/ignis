@@ -28,6 +28,7 @@ const SETTINGS_FILE = path.join(DATA_ROOT, "server-settings.json");
 const config = require("../config");
 const settings = require("../settings");
 const bootstrapCache = require("../cache");
+const remoteVaults = require("../webdav/registry");
 const vaultRouter = require("./vault");
 const { watcher } = require("@ignis/server-core");
 const express = require("express");
@@ -107,6 +108,31 @@ describe("manual refresh", () => {
 
     expect((await refresh(OTHER_ID)).status).toBe(200);
     expect((await refresh(OTHER_ID)).status).toBe(429);
+  });
+});
+
+describe("WebDAV vault management", () => {
+  it.each([
+    ["rename", () => rename(VAULT_ID, RENAMED_ID), "Renaming"],
+    ["remove", () => remove(VAULT_ID), "Removing"],
+  ])("rejects %s without touching the placeholder or settings", async (_operation, request, verb) => {
+    const placeholder = path.join(VAULT_ROOT, VAULT_ID);
+    const marker = path.join(placeholder, "local-marker.txt");
+    fs.writeFileSync(marker, "keep");
+    settings.update({ trustedVaults: [VAULT_ID] });
+    vi.spyOn(remoteVaults, "isRemoteVault").mockReturnValue(true);
+    const renameSpy = vi.spyOn(fs.promises, "rename");
+    const rmSpy = vi.spyOn(fs.promises, "rm");
+
+    const res = await request();
+
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({ error: `${verb} WebDAV vaults is not supported` });
+    expect(fs.readFileSync(marker, "utf8")).toBe("keep");
+    expect(fs.existsSync(path.join(VAULT_ROOT, RENAMED_ID))).toBe(false);
+    expect(settings.get("trustedVaults")).toEqual([VAULT_ID]);
+    expect(renameSpy).not.toHaveBeenCalled();
+    expect(rmSpy).not.toHaveBeenCalled();
   });
 });
 

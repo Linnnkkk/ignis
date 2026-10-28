@@ -1,4 +1,4 @@
-const fs = require("fs");
+const fs = require("../webdav/vault-fs");
 const fsp = fs.promises;
 const { fromVaultRel, creationTime } = require("@ignis/server-core");
 

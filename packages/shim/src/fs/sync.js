@@ -7,7 +7,8 @@ import {
   resolvePathInfo,
 } from "./transforms.js";
 import { hasVirtualFile, getVirtualFile } from "./virtual-files.js";
-import { cancelPending, enqueueWrite, hasPending } from "./write-coalescer.js";
+import { cancelPending, enqueue, enqueueWrite, flushPending, hasPending } from "./write-coalescer.js";
+import { cancelWrite } from "./write-durability.js";
 import { createUtimes } from "./utimes.js";
 
 export function createFsSync(metadataCache, contentCache, transport) {
@@ -163,6 +164,7 @@ export function createFsSync(metadataCache, contentCache, transport) {
       const transformed = applyWriteTransform(resolved, data);
 
       contentCache.set(resolved, transformed);
+      const writeVersion = contentCache.pathUpdates(resolved);
 
       const size =
         typeof transformed === "string"
@@ -170,6 +172,9 @@ export function createFsSync(metadataCache, contentCache, transport) {
           : transformed.byteLength || 0;
 
       const applyResult = (result) => {
+        if (contentCache.pathUpdates(resolved) !== writeVersion) {
+          return;
+        }
         metadataCache.set(resolved, {
           type: "file",
           size: result.size || size,
@@ -202,8 +207,14 @@ export function createFsSync(metadataCache, contentCache, transport) {
       contentCache.delete(resolved);
       metadataCache.delete(resolved);
 
-      // Fire-and-forget. suppress ENOENT (file already gone)
-      transport.unlink(resolved).catch((e) => {
+      // Preserve invocation order and retire any failed earlier write before deleting.
+      flushPending(resolved);
+      enqueue(resolved, () => {
+        cancelWrite(resolved);
+        // Refresh the echo marker after waiting for prior writes.
+        markSentOp(resolved);
+        return transport.unlink(resolved);
+      }).catch((e) => {
         if (e.code !== "ENOENT") {
           console.error(
             "[shim:fs] unlinkSync background delete failed:",

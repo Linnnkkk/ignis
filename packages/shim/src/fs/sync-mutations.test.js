@@ -4,6 +4,8 @@ import { resolvePath, registerPathResolver, _reset } from "./transforms.js";
 import { isRecentSentOp } from "./echo-guard.js";
 import { MetadataCache } from "./metadata-cache.js";
 import { ContentCache } from "./content-cache.js";
+import * as durability from "./write-durability.js";
+import * as coalescer from "./write-coalescer.js";
 
 function makeDeps() {
   const store = new Map();
@@ -189,6 +191,128 @@ describe("sync fs mutations", () => {
       1783339200000,
       1783339200000,
     );
+  });
+});
+
+describe("sync write and unlink ordering", () => {
+  afterEach(() => {
+    coalescer._reset();
+    durability._reset();
+    vi.useRealTimers();
+  });
+
+  it("flushes a buffered write, deletes it, then preserves a later sync write", async () => {
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    const disk = new Map();
+    const calls = [];
+    let release;
+    const transport = {
+      writeFile: vi.fn(async (path, data) => {
+        calls.push(data);
+        if (data === "before") await new Promise((resolve) => { release = resolve; });
+        disk.set(path, data);
+        return { mtime: 1, size: data.length };
+      }),
+      unlink: vi.fn(async (path) => { calls.push("unlink"); disk.delete(path); }),
+    };
+    coalescer.initWriteCoalescer(transport);
+    durability.initWriteDurability(transport, coalescer.enqueue);
+    const fs = createFsSync(metadata, content, transport);
+    coalescer.bufferWrite("note.md", "before", "utf8");
+    expect(fs.unlinkSync("note.md")).toBeUndefined();
+    expect(fs.writeFileSync("note.md", "after")).toBeUndefined();
+    await vi.waitFor(() => expect(calls).toEqual(["before"]));
+    release();
+    await vi.waitFor(() => expect(calls).toEqual(["before", "unlink", "after"]));
+    expect(disk.get("note.md")).toBe("after");
+    expect(content.get("note.md")).toBe("after");
+    expect(metadata.get("note.md").size).toBe(5);
+  });
+
+  it("does not restore deleted metadata when an earlier write completes", async () => {
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    let release;
+    const transport = {
+      writeFile: vi.fn(() => new Promise((resolve) => { release = resolve; })),
+      unlink: vi.fn(async () => {}),
+    };
+    coalescer.initWriteCoalescer(transport);
+    durability.initWriteDurability(transport, coalescer.enqueue);
+    const fs = createFsSync(metadata, content, transport);
+    fs.writeFileSync("note.md", "old");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    fs.unlinkSync("note.md");
+    release({ mtime: 10, size: 3 });
+    await vi.waitFor(() => expect(transport.unlink).toHaveBeenCalledOnce());
+    expect(metadata.get("note.md")).toBeNull();
+    expect(content.get("note.md")).toBeNull();
+  });
+
+  it("does not overwrite newer optimistic metadata with an older write result", async () => {
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    let release;
+    const transport = {
+      writeFile: vi.fn().mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }))
+        .mockImplementationOnce(() => new Promise(() => {})),
+    };
+    coalescer.initWriteCoalescer(transport);
+    durability.initWriteDurability(transport, coalescer.enqueue);
+    const fs = createFsSync(metadata, content, transport);
+    fs.writeFileSync("note.md", "old");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    fs.writeFileSync("note.md", "newer data");
+    const current = metadata.get("note.md");
+    release({ mtime: 1, size: 3 });
+    await vi.waitFor(() => expect(transport.writeFile).toHaveBeenCalledTimes(2));
+    expect(metadata.get("note.md")).toEqual(current);
+    expect(content.get("note.md")).toBe("newer data");
+  });
+
+  it("suppresses ENOENT and logs other background delete errors", async () => {
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    const missing = Object.assign(new Error("missing"), { code: "ENOENT" });
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+    const transport = { unlink: vi.fn().mockRejectedValueOnce(missing).mockRejectedValueOnce(denied) };
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fs = createFsSync(metadata, content, transport);
+      expect(fs.unlinkSync("missing.md")).toBeUndefined();
+      expect(fs.unlinkSync("denied.md")).toBeUndefined();
+      await vi.waitFor(() => expect(log).toHaveBeenCalledOnce());
+      expect(log).toHaveBeenCalledWith("[shim:fs] unlinkSync background delete failed:", "denied.md", denied);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("cancels retries of a failed write after unlink", async () => {
+    vi.useFakeTimers();
+    const metadata = new MetadataCache();
+    const content = new ContentCache();
+    const disk = new Map([["note.md", "original"]]);
+    const transport = {
+      writeFile: vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (path, data) => {
+        disk.set(path, data);
+        return { mtime: 1, size: data.length };
+      }),
+      unlink: vi.fn(async (path) => { disk.delete(path); }),
+    };
+    coalescer.initWriteCoalescer(transport);
+    durability.initWriteDurability(transport, coalescer.enqueue);
+    const fs = createFsSync(metadata, content, transport);
+    fs.writeFileSync("note.md", "failed");
+    await vi.advanceTimersByTimeAsync(0);
+    fs.unlinkSync("note.md");
+    await vi.advanceTimersByTimeAsync(0);
+    durability.retryAll();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(transport.writeFile).toHaveBeenCalledTimes(1);
+    expect(disk.has("note.md")).toBe(false);
+    expect(metadata.get("note.md")).toBeNull();
   });
 });
 

@@ -26,7 +26,10 @@ const TEXT_EXTENSIONS = new Set([
 export const MAX_FILE_BYTES = 512 * 1024;
 
 // Plugin bundles run a few MB and Obsidian needs them at boot, so priority accepts larger files than bulk.
-const PRIORITY_MAX_FILE_BYTES = 4 * 1024 * 1024;
+// Raised from 4 MB to 16 MB: real vaults routinely ship 10 MB+ bundles (a 1064-file test vault was
+// 85% plugin weight, with one main.js at 11.98 MB). Excluding those meant pulling 12 MB on every
+// cold boot instead of once. The per-slice byte budget still caps total boot I/O.
+const PRIORITY_MAX_FILE_BYTES = 16 * 1024 * 1024;
 const BATCH_SIZE = 50;
 const BATCH_CONCURRENCY = 6; // concurrent in-flight batch-reads, to pipeline requests and hide round-trip latency
 const RETRY_DELAYS_MS = [1000, 2000, 4000];

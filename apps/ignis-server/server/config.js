@@ -23,6 +23,14 @@ try {
   console.error("[config] Failed to create DATA_ROOT:", dataRoot, e.message);
 }
 
+// Remote placeholders are isolated from local vault discovery.
+const remoteRegistry = require("./webdav/registry");
+try {
+  remoteRegistry.load({ vaultRoot, dataRoot });
+} catch (e) {
+  console.error("[config] Failed to mount remote vaults:", e.message);
+}
+
 function discoverVaults() {
   // clean object. TODO: refactor to Map for more idiomatic code.
   const vaults = Object.create(null);
@@ -56,6 +64,16 @@ function discoverVaults() {
     }
   } catch (e) {
     console.error("[config] Failed to read VAULT_ROOT:", vaultRoot, e.message);
+  }
+
+  for (const remote of remoteRegistry.list()) {
+    // A local vault created after startup takes precedence on rescan.
+    if (Object.prototype.hasOwnProperty.call(vaults, remote.vaultId)) {
+      remoteRegistry.unmount(remote.vaultId);
+      console.error("[config] Local vault conflicts with remote vault:", remote.vaultId);
+    } else {
+      vaults[remote.vaultId] = remote.dir;
+    }
   }
 
   // Optionally create a default vault if none exist

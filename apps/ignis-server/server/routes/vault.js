@@ -7,6 +7,7 @@ const settings = require("../settings");
 const treeReconcile = require("../cache/reconcile");
 const { withWatcherStopped } = require("../vault/lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
+const remoteVaults = require("../webdav/registry");
 
 const router = express.Router();
 
@@ -43,6 +44,7 @@ router.get("/list", (req, res) => {
     id,
     name: id,
     path: vaultPath,
+    remote: remoteVaults.isRemoteVault(id),
   }));
 
   res.json(list);
@@ -135,6 +137,10 @@ router.post("/rename", async (req, res) => {
     return res.status(404).json({ error: "Vault not found" });
   }
 
+  if (remoteVaults.isRemoteVault(vaultId)) {
+    return res.status(501).json({ error: "Renaming WebDAV vaults is not supported" });
+  }
+
   if (
     newName !== vaultId &&
     Object.prototype.hasOwnProperty.call(config.vaults, newName)
@@ -186,6 +192,10 @@ router.delete("/remove", async (req, res) => {
 
   if (!vaultPath) {
     return res.status(404).json({ error: "Vault not found" });
+  }
+
+  if (remoteVaults.isRemoteVault(vaultId)) {
+    return res.status(501).json({ error: "Removing WebDAV vaults is not supported" });
   }
 
   try {

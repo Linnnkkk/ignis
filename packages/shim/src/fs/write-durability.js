@@ -100,6 +100,17 @@ function discard(path) {
   entries.delete(path);
 }
 
+// Retire an older write after it has settled in the per-path queue.
+export function cancelWrite(path) {
+  const entry = entries.get(path);
+  const failed = entry && entry.status === "failed" && !entry.silent;
+  discard(path);
+  recompute();
+  if (failed) {
+    emitFailureChange();
+  }
+}
+
 // An entry still trying (in flight past the threshold, or retrying) contributes to "pending".
 function contributesPending(entry) {
   if (entry.silent || entry.status === "failed") {
@@ -193,6 +204,10 @@ function attempt(path, gen) {
     return transport
       .writeFile(path, current.data, current.encoding)
       .then((result) => {
+        if (entries.get(path) !== current) {
+          return result;
+        }
+
         if (current.onResult && result && result.mtime) {
           current.onResult(result);
         }
@@ -202,7 +217,11 @@ function attempt(path, gen) {
         }
 
         return Promise.resolve()
-          .then(current.followUp)
+          .then(() => {
+            if (entries.get(path) === current) {
+              return current.followUp();
+            }
+          })
           .catch(() => {})
           .then(() => result);
       });

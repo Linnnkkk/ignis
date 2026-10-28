@@ -27,7 +27,7 @@ function populate(select) {
   for (const v of window.__vaultList || []) {
     const option = document.createElement("option");
     option.value = v.id;
-    option.textContent = v.name || v.id;
+    option.textContent = `${v.name || v.id}${v.remote ? " · WebDAV" : ""}`;
     option.selected = v.id === current;
     select.insertBefore(option, manageOption);
   }

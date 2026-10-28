@@ -5,6 +5,7 @@ import {
   COALESCE_MAX_BYTES,
   enqueue,
   enqueueWrite,
+  flushPending,
   hasPending,
   initWriteCoalescer,
   isBooting,
@@ -18,7 +19,7 @@ import {
 } from "./transforms.js";
 import { hasVirtualFile, getVirtualFile } from "./virtual-files.js";
 import { realpathSync } from "./realpath.js";
-import { initWriteDurability, onFailure } from "./write-durability.js";
+import { cancelWrite, initWriteDurability, onFailure } from "./write-durability.js";
 import { createUtimes } from "./utimes.js";
 import { createReadAhead } from "./read-ahead.js";
 import { isTextPath } from "./indexer-prefetch.js";
@@ -193,6 +194,7 @@ export function createFsPromises(metadataCache, contentCache, transport) {
       const transformed = applyWriteTransform(resolved, data);
 
       contentCache.set(resolved, transformed);
+      const writeVersion = contentCache.pathUpdates(resolved);
 
       const size =
         typeof transformed === "string"
@@ -200,6 +202,9 @@ export function createFsPromises(metadataCache, contentCache, transport) {
           : transformed.byteLength || 0;
 
       const applyResult = (result) => {
+        if (contentCache.pathUpdates(resolved) !== writeVersion) {
+          return;
+        }
         metadataCache.set(resolved, {
           type: "file",
           size: result.size || size,
@@ -252,7 +257,15 @@ export function createFsPromises(metadataCache, contentCache, transport) {
       contentCache.delete(resolved);
       metadataCache.delete(resolved);
 
-      await transport.unlink(resolved);
+      // Preserve invocation order even when the preceding write is still buffered.
+      flushPending(resolved);
+      await enqueue(resolved, () => {
+        // Earlier writes have settled; later writes have not started tracking yet.
+        cancelWrite(resolved);
+        // A slow preceding write can outlive the echo suppression window.
+        markSentOp(resolved);
+        return transport.unlink(resolved);
+      });
     },
 
     async rename(oldPath, newPath) {

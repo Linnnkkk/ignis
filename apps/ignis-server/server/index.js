@@ -253,6 +253,35 @@ app.use("/vault-files", (req, res, next) => {
     return res.send(body);
   }
 
+  const remote = require("./webdav/registry").backendForVaultId(vaultId);
+
+  if (remote) {
+    if (!resolved || (req.method !== "GET" && req.method !== "HEAD")) {
+      return res.sendStatus(resolved ? 405 : 403);
+    }
+
+    const relPath = path.relative(vaultPath, resolved).split(path.sep).join("/");
+    remote.openReadStream(relPath, {
+      range: req.headers.range,
+      ifRange: req.headers["if-range"],
+      ifNoneMatch: req.headers["if-none-match"],
+    }).then(({ status, headers, stream }) => {
+      res.status(status);
+      for (const header of ["content-length", "content-range", "accept-ranges", "etag", "last-modified", "cache-control"]) {
+        if (headers[header]) res.setHeader(header, headers[header]);
+      }
+      if (status === 200 || status === 206) res.type(path.extname(resolved) || ".bin");
+      stream.on("error", () => res.destroy());
+      res.on("close", () => stream.destroy());
+      if (req.method === "HEAD") {
+        stream.destroy();
+        return res.end();
+      }
+      stream.pipe(res);
+    }).catch(next);
+    return;
+  }
+
   // Rewrite req.url to strip the vault ID prefix, then serve statically
   req.url = "/" + parts.slice(1).join("/");
   express.static(vaultPath)(req, res, next);
@@ -309,6 +338,26 @@ const server = app.listen(config.port, config.host, async () => {
   ]);
 
   console.log(`[ignis] startup: migrate done +${Date.now() - tStart}ms`);
+
+  // WebDAV vaults get no filesystem events, so poll for external changes.
+  // Polling idles to zero requests whenever nobody is listening.
+  const remoteVaults = require("./webdav/registry");
+  const remoteWatcher = require("./webdav/remote-watcher");
+
+  for (const { vaultId, dir } of remoteVaults.list()) {
+    const backend = remoteVaults.backendForVaultId(vaultId);
+
+    try {
+      // chokidar on the empty mount point would never fire, so start the
+      // poller instead of the filesystem watcher for these vaults.
+      await remoteWatcher.start(vaultId, backend, {
+        intervalMs: Number(process.env.VITREUS_WEBDAV_POLL_MS) || undefined,
+      });
+      console.log(`[webdav] Polling vault ${vaultId} (${dir}) for external changes`);
+    } catch (e) {
+      console.warn(`[webdav] Could not start poller for ${vaultId}:`, e.message);
+    }
+  }
 
   bootstrapCache
     .warmUp()

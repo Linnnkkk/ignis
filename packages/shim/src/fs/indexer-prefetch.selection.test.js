@@ -290,4 +290,40 @@ describe("prefetchVaultContent file and byte caps", () => {
     expect(all).toContain(".obsidian/plugins/a/main.js");
     expect(all).not.toContain("Note.md");
   });
+  it("admits a 12 MB plugin bundle into priority instead of leaving it for on-demand reads", async () => {
+    // Real-world case: a 1064-file vault was 85% plugin weight, with one main.js at 11.98 MB.
+    // The old 4 MB per-file cap silently excluded it, so every cold boot re-pulled ~12 MB.
+    const t = {
+      ".obsidian/plugins/Components/main.js": { type: "file", size: 12 * MB },
+      ".obsidian/plugins/small/main.js": { type: "file", size: 2 * MB },
+      "Note.md": { type: "file", size: 100 },
+    };
+
+    const cache = { ...makeCache(), maxSize: 50 * MB };
+    const result = prefetchVaultContent("v", t, cache);
+    await result.bulk;
+
+    const all = fetchCalls.flat();
+
+    expect(all).toContain(".obsidian/plugins/Components/main.js");
+    expect(all).toContain(".obsidian/plugins/small/main.js");
+    // Bulk still follows the priority slice, so the small note is admitted too.
+    expect(all).toContain("Note.md");
+  });
+
+  it("still rejects a plugin bundle above the 16 MB priority cap", async () => {
+    const t = {
+      ".obsidian/plugins/huge/main.js": { type: "file", size: 20 * MB },
+      ".obsidian/plugins/ok/main.js": { type: "file", size: 2 * MB },
+    };
+
+    const cache = { ...makeCache(), maxSize: 50 * MB };
+    const result = prefetchVaultContent("v", t, cache);
+    await result.bulk;
+
+    const all = fetchCalls.flat();
+
+    expect(all).toContain(".obsidian/plugins/ok/main.js");
+    expect(all).not.toContain(".obsidian/plugins/huge/main.js");
+  });
 });

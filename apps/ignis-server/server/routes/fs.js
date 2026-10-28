@@ -1,5 +1,7 @@
 const express = require("express");
-const fs = require("fs");
+// Routed fs: paths under a mounted WebDAV vault go to that backend, everything
+// else falls through to Node's fs. See webdav/vault-fs.js.
+const fs = require("../webdav/vault-fs");
 const path = require("path");
 const archiver = require("archiver");
 const config = require("../config");
@@ -23,6 +25,11 @@ const {
   supersedePendingSubtree,
 } = writeCoalescer;
 const bootstrapCache = require("../cache");
+const remoteVaults = require("../webdav/registry");
+
+// Coalesced writes must travel the same dispatcher as the routes, otherwise a
+// write to a mounted WebDAV vault lands on the empty mount point instead.
+writeCoalescer.setFs(fs);
 
 const router = express.Router();
 
@@ -328,6 +335,24 @@ router.post("/writeFileChunk", async (req, res) => {
   }
 });
 
+// Queue writes and deletes before any asynchronous work, including mkdir.
+// Only adjacent deletes may share an operation: a write between them must run.
+const pathMutations = new Map();
+function queuePathMutation(resolved, type, fn) {
+  const previous = pathMutations.get(resolved);
+  if (type === "unlink" && previous?.type === "unlink") return previous.operation;
+
+  const operation = previous
+    ? previous.operation.catch(() => {}).then(fn)
+    : Promise.resolve().then(fn);
+  const entry = { type, operation };
+  pathMutations.set(resolved, entry);
+  operation.finally(() => {
+    if (pathMutations.get(resolved) === entry) pathMutations.delete(resolved);
+  }).catch(() => {});
+  return operation;
+}
+
 // POST /api/fs/writeFile { path, content, encoding?, vault? }
 router.post("/writeFile", async (req, res) => {
   const resolved = guardPath(req, res, "body");
@@ -337,18 +362,20 @@ router.post("/writeFile", async (req, res) => {
   }
 
   try {
-    // Ensure parent directory exists
-    const dir = path.dirname(resolved);
-    await fs.promises.mkdir(dir, { recursive: true });
+    const result = await queuePathMutation(resolved, "write", async () => {
+      // Ensure parent directory exists
+      const dir = path.dirname(resolved);
+      await fs.promises.mkdir(dir, { recursive: true });
 
-    const encoding = req.body.encoding || "utf-8";
-    let data = req.body.content;
+      const encoding = req.body.encoding || "utf-8";
+      let data = req.body.content;
 
-    if (req.body.base64) {
-      data = Buffer.from(req.body.content, "base64");
-    }
+      if (req.body.base64) {
+        data = Buffer.from(req.body.content, "base64");
+      }
 
-    const result = await writeCoalesced(resolved, data, encoding);
+      return writeCoalesced(resolved, data, encoding);
+    });
     const rel = toRelative(req._vaultRoot, resolved);
     const buffered = getPending(resolved) !== null;
 
@@ -498,13 +525,12 @@ router.delete("/unlink", async (req, res) => {
   const rel = toRelative(req._vaultRoot, resolved);
 
   try {
-    await supersedePending(resolved, () =>
-      fs.promises.unlink(resolved).catch((e) => {
-        // already gone counts as deleted
-        if (e.code !== "ENOENT") {
-          throw e;
-        }
-      }),
+    await queuePathMutation(resolved, "unlink", () =>
+      supersedePending(resolved, () =>
+        fs.promises.unlink(resolved).catch((e) => {
+          if (e.code !== "ENOENT") throw e;
+        }),
+      ),
     );
 
     res.json({ ok: true });
@@ -707,6 +733,64 @@ router.get("/tree", async (req, res) => {
   }
 });
 
+// Streams a file out of a mounted WebDAV vault. Range is forwarded verbatim so
+// media/PDF attachments are read in slices instead of being buffered whole.
+async function pipeRemoteFile(req, res, remote, filename) {
+  let start;
+  let end;
+
+  const range = req.headers.range;
+
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+
+    // Suffix ranges ("bytes=-500") would need the size up front; fall back to a
+    // full response rather than guessing wrong.
+    if (m && m[1] !== "") {
+      start = Number(m[1]);
+      end = m[2] === "" ? undefined : Number(m[2]);
+    }
+  }
+
+  const { status, headers, stream } = await remote.backend.openReadStream(
+    remote.rel,
+    { start, end },
+  );
+
+  if (status === 404) {
+    stream.resume();
+    res.status(404).json({ error: "ENOENT: no such file", code: "ENOENT" });
+    return;
+  }
+
+  if (status !== 200 && status !== 206) {
+    stream.resume();
+    res.status(status >= 400 ? status : 502).json({ error: "WebDAV read failed", status });
+    return;
+  }
+
+  res.status(status);
+  res.setHeader("Accept-Ranges", "bytes");
+  // res.type() sets the header itself and returns the response object.
+  res.type(path.extname(filename) || ".bin");
+
+  if (headers["content-range"]) {
+    res.setHeader("Content-Range", headers["content-range"]);
+  }
+
+  if (headers["content-length"]) {
+    res.setHeader("Content-Length", headers["content-length"]);
+  }
+
+  if (headers.etag) {
+    res.setHeader("ETag", headers.etag);
+  }
+
+  stream.on("error", () => res.destroy());
+  res.on("close", () => stream.destroy());
+  stream.pipe(res);
+}
+
 // GET /api/fs/download?path=...&vault=...
 router.get("/download", async (req, res) => {
   const resolved = guardPath(req, res);
@@ -742,6 +826,16 @@ router.get("/download", async (req, res) => {
       "Content-Disposition",
       encodeContentDispositionFilename(filename),
     );
+
+    // A mounted WebDAV vault has no local file for sendFile to open, so the
+    // body is proxied instead. Range is forwarded so a large attachment costs
+    // one ranged read rather than a full download into memory.
+    const remote = remoteVaults.backendForPath(resolved);
+
+    if (remote) {
+      return pipeRemoteFile(req, res, remote, filename);
+    }
+
     res.sendFile(resolved);
   } catch (e) {
     res.status(e.code === "ENOENT" ? 404 : 500).json(sanitizeError(e));

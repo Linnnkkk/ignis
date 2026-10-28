@@ -1,4 +1,6 @@
-const fs = require("fs");
+// Routed fs: a mounted WebDAV vault is walked through its backend, so the
+// bootstrap tree is built from PROPFIND listings with no extra code here.
+const fs = require("../webdav/vault-fs");
 const fsp = fs.promises;
 const path = require("path");
 const config = require("../config");
@@ -27,6 +29,7 @@ const {
   notifyStaleEntryServed,
 } = require("./state");
 const { fileNode } = require("./tree-ops");
+const remoteVaults = require("../webdav/registry");
 const { getOrCompress, markCompressionStale } = require("./compress");
 const {
   enqueue,
@@ -96,8 +99,29 @@ function logIgnoreSuggestions(vaultId, tree) {
   }
 }
 
+// A mounted WebDAV vault is crawled with one Depth: infinity PROPFIND instead
+// of the per-entry walk below: the walk issues one stat per file plus one
+// readdir per directory, which over the network is orders of magnitude slower.
+async function crawlVaultTree(vaultId, vaultPath) {
+  const remote = remoteVaults.backendForPath(vaultPath);
+
+  if (!remote || remote.rel !== "") {
+    return walkTree(vaultPath);
+  }
+
+  const listed = await remote.backend.listTree({
+    isIgnored: (rel) => watcher.isIgnoredPath(rel),
+  });
+
+  if (listed.stats?.truncated) {
+    throw new Error("WebDAV 目录扫描被截断，无法生成完整快照");
+  }
+
+  return { tree: listed.tree, dirMtimes: listed.dirMtimes };
+}
+
 async function crawlVault(vaultId, vaultPath) {
-  const result = await walkTree(vaultPath);
+  const result = await crawlVaultTree(vaultId, vaultPath);
 
   lastCrawls.set(vaultId, Date.now());
   logIgnoreSuggestions(vaultId, result.tree);

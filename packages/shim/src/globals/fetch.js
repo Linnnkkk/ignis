@@ -102,18 +102,20 @@ export function installFetchShim() {
 
     let body = null;
 
-    if (init?.body && method !== "GET" && method !== "HEAD") {
-      if (typeof init.body === "string") {
-        body = init.body;
-      } else if (
-        init.body instanceof ArrayBuffer ||
-        init.body instanceof Uint8Array
-      ) {
-        body = init.body;
-      } else if (typeof init.body === "object") {
-        body = JSON.stringify(init.body);
-      } else {
-        body = String(init.body);
+    // Vitreus Request body v1: clone preserves the caller's stream; failures must reject.
+    if (method !== "GET" && method !== "HEAD") {
+      if (init?.body != null) {
+        if (typeof init.body === "string") {
+          body = init.body;
+        } else if (init.body instanceof ArrayBuffer || init.body instanceof Uint8Array) {
+          body = init.body;
+        } else if (typeof init.body === "object") {
+          body = JSON.stringify(init.body);
+        } else {
+          body = String(init.body);
+        }
+      } else if (input instanceof Request && input.body !== null) {
+        body = await input.clone().arrayBuffer();
       }
     }
     console.log("[shim:fetch] Proxying cross-origin:", method, redactUrl(url));

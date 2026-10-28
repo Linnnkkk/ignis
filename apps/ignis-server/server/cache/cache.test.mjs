@@ -31,6 +31,7 @@ config.refreshVaults();
 const settings = require("../settings");
 const bootstrapCache = require("./index");
 const { watcher } = require("@ignis/server-core");
+const remoteVaults = require("../webdav/registry");
 
 const seed = (name, content) => {
   const abs = path.join(vaultDir, name);
@@ -81,6 +82,24 @@ afterEach(async () => {
 afterAll(() => {
   fs.rmSync(VAULT_ROOT, { recursive: true, force: true });
   fs.rmSync(DATA_ROOT, { recursive: true, force: true });
+});
+
+describe("remote crawl failures", () => {
+  it("rejects failed or truncated snapshots without replacing a prior entry", async () => {
+    const listTree = vi.fn().mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ tree: {}, dirMtimes: {}, stats: { truncated: true } })
+      .mockResolvedValueOnce({ tree: { "old.md": { type: "file", size: 1, mtime: 1 } }, dirMtimes: {} })
+      .mockRejectedValueOnce(new Error("403"))
+      .mockResolvedValueOnce({ tree: {}, dirMtimes: {}, stats: { truncated: true } });
+    vi.spyOn(remoteVaults, "backendForPath").mockReturnValue({ rel: "", backend: { listTree } });
+    await expect(bootstrapCache.getOrBuild(VAULT_ID)).rejects.toThrow("offline");
+    await expect(bootstrapCache.getOrBuild(VAULT_ID)).rejects.toThrow(/截断/);
+    const entry = await bootstrapCache.getOrBuild(VAULT_ID);
+    await expect(bootstrapCache.reconcileVault(VAULT_ID)).rejects.toThrow("403");
+    await expect(bootstrapCache.reconcileVault(VAULT_ID)).rejects.toThrow(/截断/);
+    expect((await bootstrapCache.getOrBuild(VAULT_ID))).toBe(entry);
+    expect(entry.response.tree["old.md"]).toBeDefined();
+  });
 });
 
 describe("watched and unwatched serving modes", () => {

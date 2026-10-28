@@ -102,6 +102,82 @@ async function bufferWrite(p, first, second) {
   expect(writeCoalescer.getPending(abs(p))).not.toBeNull();
 }
 
+describe("same-path write and unlink ordering", () => {
+  const routedFs = require("../webdav/vault-fs");
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("queues unlink behind a write even while its mkdir is pending", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const originalMkdir = routedFs.promises.mkdir;
+    const deleteSpy = vi.spyOn(routedFs.promises, "unlink");
+    vi.spyOn(routedFs.promises, "mkdir").mockImplementation(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      return originalMkdir(...args);
+    });
+    const writing = writeFile("nested/x.md", "hello");
+    await entered.promise;
+    const deleting = unlink("nested/x.md");
+    try {
+      await sleep(50);
+      expect(deleteSpy).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+    }
+    expect((await writing).ok).toBe(true);
+    expect((await deleting).ok).toBe(true);
+    expect(exists("nested/x.md")).toBe(false);
+  });
+
+  it("runs a write between two deletes after the first delete finishes", async () => {
+    fs.writeFileSync(abs("x.md"), "old");
+    const entered = deferred();
+    const release = deferred();
+    const originalUnlink = routedFs.promises.unlink;
+    let calls = 0;
+    vi.spyOn(routedFs.promises, "unlink").mockImplementation(async (...args) => {
+      calls++;
+      if (calls === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      return originalUnlink(...args);
+    });
+    const first = unlink("x.md");
+    await entered.promise;
+    const writing = writeFile("x.md", "new");
+    // Ensure the write has entered the server before issuing the second delete.
+    await sleep(50);
+    const second = unlink("x.md");
+    try {
+      await sleep(50);
+      expect(calls).toBe(1);
+    } finally {
+      release.resolve();
+    }
+    expect((await first).ok).toBe(true);
+    expect((await writing).ok).toBe(true);
+    expect((await second).ok).toBe(true);
+    expect(calls).toBe(2);
+    expect(exists("x.md")).toBe(false);
+  });
+
+  it("continues the queue after a failed write", async () => {
+    fs.writeFileSync(abs("x.md"), "old");
+    vi.spyOn(routedFs.promises, "mkdir").mockRejectedValueOnce(new Error("mkdir failed"));
+    expect((await writeFile("x.md", "new")).status).toBe(500);
+    expect((await unlink("x.md")).ok).toBe(true);
+    expect(exists("x.md")).toBe(false);
+  });
+});
+
 describe("fs route handlers reconcile the coalescer buffer (WRITE_COALESCE_MS > 0)", () => {
   it("unlink does not resurrect a deleted file", async () => {
     await bufferWrite("x.md", "v1", "v2");

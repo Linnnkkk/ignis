@@ -15,6 +15,28 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("retired retry callbacks", () => {
+  it("does not run result or follow-up callbacks after retirement", async () => {
+    let release;
+    transport.writeFile.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const onResult = vi.fn();
+    const followUp = vi.fn();
+    const track = wd.trackWrite("a.md");
+    track.failure("old", "utf8", onResult);
+    wd.attachFollowUp("a.md", followUp);
+    await vi.advanceTimersByTimeAsync(1000);
+    wd.cancelWrite("a.md");
+    const next = wd.trackWrite("a.md");
+    release({ mtime: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onResult).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+    expect(wd.hasWriteInProgress("a.md")).toBe(true);
+    next.success();
+  });
+});
+
 describe("pending threshold", () => {
   it("does not go pending for a write that resolves before the threshold", () => {
     const track = wd.trackWrite("a.md");
