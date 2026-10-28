@@ -22,6 +22,7 @@ const CONFIG_NAME = "remote-vaults.json";
 let byVaultDir = new Map(); // resolved placeholder dir -> { vaultId, backend }
 let byVaultId = new Map(); // vaultId -> { dir, backend }
 let loadError = null;
+const unmountedDirs = new Set();
 
 function readConfig(dataRoot) {
   const file = path.join(dataRoot, CONFIG_NAME);
@@ -64,6 +65,7 @@ function load({ vaultRoot, dataRoot }) {
   byVaultDir = new Map();
   byVaultId = new Map();
   loadError = null;
+  unmountedDirs.clear();
 
   let list;
 
@@ -147,6 +149,12 @@ function load({ vaultRoot, dataRoot }) {
 
 // Longest-prefix match so nested mounts would resolve correctly if ever used.
 function backendForPath(absPath) {
+  const resolved = path.resolve(absPath);
+  for (const dir of unmountedDirs) {
+    if (resolved === dir || resolved.startsWith(dir + path.sep)) {
+      throw Object.assign(new Error("WebDAV vault is disabled"), { code: "ENOENT" });
+    }
+  }
   if (byVaultDir.size === 0) {
     return null;
   }
@@ -183,6 +191,8 @@ function backendForVaultId(vaultId) {
 function unmount(vaultId) {
   const entry = byVaultId.get(vaultId);
   if (entry) {
+    // Keep a runtime tombstone: stale work must never fall through to disk.
+    unmountedDirs.add(entry.dir);
     byVaultDir.delete(entry.dir);
     byVaultId.delete(vaultId);
   }

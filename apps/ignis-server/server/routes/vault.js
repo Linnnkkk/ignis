@@ -5,7 +5,7 @@ const path = require("path");
 const bootstrapCache = require("../cache");
 const settings = require("../settings");
 const treeReconcile = require("../cache/reconcile");
-const { withWatcherStopped } = require("../vault/lifecycle");
+const { withWatcherStopped, closeVaultSockets } = require("../vault/lifecycle");
 const { sanitizeError } = require("@ignis/server-core");
 const remoteVaults = require("../webdav/registry");
 
@@ -35,6 +35,30 @@ function isValidVaultName(name) {
 
   return !WINDOWS_RESERVED.test(name);
 }
+
+// Native runtime control: never trust req.ip or forwarded/proxy headers.
+router.post("/webdav/disable", async (req, res) => {
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket.remoteAddress) || req.headers.origin) {
+    return res.status(403).json({ error: "Native local management only" });
+  }
+  res.set("Cache-Control", "no-store");
+  const remoteWatcher = require("../webdav/remote-watcher");
+  const { watcher } = require("@ignis/server-core");
+  const disabled = remoteVaults.list().map(({ vaultId }) => vaultId);
+  const stopping = [];
+  // Revoke all paths synchronously before yielding to any watcher shutdown.
+  for (const id of disabled) {
+    remoteVaults.unmount(id);
+    remoteWatcher.stop(id);
+    treeReconcile.cancelVault(id);
+    bootstrapCache.invalidateVault(id);
+    stopping.push(watcher.stopWatching(id));
+    closeVaultSockets(id);
+  }
+  config.refreshVaults();
+  await Promise.all(stopping);
+  res.json({ ok: true, disabled, localVault: Object.keys(config.vaults)[0] || "" });
+});
 
 // GET /api/vault/list - returns all discovered vaults (re-scans on each call)
 router.get("/list", (req, res) => {

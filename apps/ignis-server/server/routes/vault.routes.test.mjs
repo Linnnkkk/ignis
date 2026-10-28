@@ -30,6 +30,10 @@ const settings = require("../settings");
 const bootstrapCache = require("../cache");
 const remoteVaults = require("../webdav/registry");
 const vaultRouter = require("./vault");
+const remoteWatcher = require("../webdav/remote-watcher");
+const treeReconcile = require("../cache/reconcile");
+const vaultFs = require("../webdav/vault-fs");
+const lifecycle = require("../vault/lifecycle");
 const { watcher } = require("@ignis/server-core");
 const express = require("express");
 
@@ -39,7 +43,17 @@ let base;
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
+  app.set("trust proxy", true);
+  // Test-only source injection: exercise the socket guard without a LAN fixture.
+  app.use((req, _res, next) => {
+    Object.defineProperty(req.socket, "remoteAddress", {
+      value: req.headers["x-test-peer"] || "::ffff:127.0.0.1", configurable: true,
+    });
+    next();
+  });
   app.use("/api/vault", vaultRouter);
+  app.use("/api/fs", require("./fs"));
+  app.use("/api/bootstrap", require("./bootstrap"));
 
   await new Promise((resolve) => {
     server = app.listen(0, resolve);
@@ -73,6 +87,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  remoteWatcher.stopAll();
+  lifecycle.setWss(null);
   vi.restoreAllMocks();
 });
 
@@ -178,5 +194,77 @@ describe("trusted vaults through the vault routes", () => {
 
     expect(res.status).toBe(200);
     expect(fs.existsSync(SETTINGS_FILE)).toBe(false);
+  });
+});
+
+
+describe("runtime WebDAV disable", () => {
+  const disable = (headers = {}) => fetch(`${base}/api/vault/webdav/disable`, { method: "POST", headers });
+
+  function mount() {
+    process.env.VITREUS_WEBDAV_RUNTIME = JSON.stringify({ vaults: [
+      { id: "remote-a", url: "https://example.test/dav/a" },
+      { id: "remote-b", url: "https://example.test/dav/b" },
+    ] });
+    remoteVaults.load({ vaultRoot: VAULT_ROOT, dataRoot: DATA_ROOT });
+    config.refreshVaults();
+    return remoteVaults.list();
+  }
+
+  it.each(["192.168.0.22", "::ffff:192.168.0.22", "203.0.113.1"])("rejects peer %s even with spoofed loopback forwarding", async (peer) => {
+    mount();
+    const res = await disable({ "x-test-peer": peer, "x-forwarded-for": "127.0.0.1" });
+    expect(res.status).toBe(403);
+    expect(remoteVaults.list()).toHaveLength(2);
+  });
+
+  it("rejects browser-origin management", async () => {
+    mount();
+    expect((await disable({ origin: "http://localhost" })).status).toBe(403);
+    expect(remoteVaults.list()).toHaveLength(2);
+  });
+
+  it.each(["127.0.0.1", "::1", "::ffff:127.0.0.1"])("revokes all mounts and lifecycle work from %s without touching placeholder data", async (peer) => {
+    const mounts = mount();
+    const cancel = vi.spyOn(treeReconcile, "cancelVault");
+    const invalidate = vi.spyOn(bootstrapCache, "invalidateVault");
+    const stop = vi.spyOn(remoteWatcher, "stop");
+    const stopWatching = vi.spyOn(watcher, "stopWatching");
+    const close = vi.fn();
+    lifecycle.setWss({ closeVaultSockets: close });
+    for (const { vaultId, dir } of mounts) {
+      fs.writeFileSync(path.join(dir, "marker.md"), "keep");
+      await remoteWatcher.start(vaultId, { listTree: async () => ({ tree: {} }) });
+    }
+    const res = await disable({ "x-test-peer": peer, "x-forwarded-for": "192.168.0.22" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, disabled: ["remote-a", "remote-b"], localVault: VAULT_ID });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(remoteVaults.list()).toEqual([]);
+    for (const { vaultId, dir } of mounts) {
+      expect(cancel).toHaveBeenCalledWith(vaultId);
+      expect(invalidate).toHaveBeenCalledWith(vaultId);
+      expect(stop).toHaveBeenCalledWith(vaultId);
+      expect(stopWatching).toHaveBeenCalledWith(vaultId);
+      expect(close).toHaveBeenCalledWith(vaultId);
+      expect(config.getVaultPathOrRescan(vaultId, Date.now() + 2000)).toBeNull();
+      expect(fs.readFileSync(path.join(dir, "marker.md"), "utf8")).toBe("keep");
+      expect((await fetch(`${base}/api/vault/info?vault=${vaultId}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/bootstrap?vault=${vaultId}`)).status).toBe(404);
+      expect((await fetch(`${base}/api/fs/readFile?vault=${vaultId}&path=marker.md`)).status).toBe(404);
+      expect((await fetch(`${base}/api/fs/writeFile`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ vault: vaultId, path: "new.md", data: "bad" }) })).status).toBe(404);
+      await expect(vaultFs.promises.readFile(path.join(dir, "marker.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(vaultFs.promises.writeFile(path.join(dir, "new.md"), "bad")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(vaultFs.promises.copyFile(path.join(VAULT_ROOT, VAULT_ID, "local.md"), path.join(dir, "new.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(fs.existsSync(path.join(dir, "new.md"))).toBe(false);
+    }
+    expect(await (await disable()).json()).toEqual({ ok: true, disabled: [], localVault: VAULT_ID });
+    expect((await fetch(`${base}/api/vault/info?vault=${VAULT_ID}`)).status).toBe(200);
+  });
+
+  it("returns an empty localVault when no local vault exists", async () => {
+    mount();
+    fs.rmSync(path.join(VAULT_ROOT, VAULT_ID), { recursive: true });
+    expect(await (await disable()).json()).toEqual({ ok: true, disabled: ["remote-a", "remote-b"], localVault: "" });
   });
 });

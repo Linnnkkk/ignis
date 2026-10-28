@@ -37,4 +37,8 @@ async function withWatcherStopped(vaultId, vaultPath, mutate) {
   }
 }
 
-module.exports = { setWss, withWatcherStopped };
+function closeVaultSockets(vaultId) {
+  wss?.closeVaultSockets(vaultId);
+}
+
+module.exports = { setWss, withWatcherStopped, closeVaultSockets };

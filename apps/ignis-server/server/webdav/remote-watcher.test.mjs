@@ -3,7 +3,7 @@ import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
 const { watcher } = require("@ignis/server-core");
-const { diff, pollOnce, start, stopAll } = require("./remote-watcher.js");
+const { diff, pollOnce, start, stop, stopAll } = require("./remote-watcher.js");
 
 afterEach(() => { stopAll(); vi.restoreAllMocks(); });
 
@@ -71,5 +71,35 @@ describe("remote WebDAV change polling", () => {
     const previous = new Map([["path", { type: "file", size: 0, mtime: 0 }]]);
     const next = new Map([["path", { type: "directory", size: 0, mtime: 0 }]]);
     expect(diff(previous, next)).toMatchObject([{ type: "modified", path: "path" }]);
+  });
+});
+
+
+describe("remote watcher shutdown races", () => {
+  it("cannot install a timer after being stopped during its initial snapshot", async () => {
+    let resolve;
+    const listTree = vi.fn(() => new Promise((done) => { resolve = done; }));
+    const starting = start("pending", { listTree });
+    expect(stop("pending")).toBe(true);
+    resolve({ tree: {} });
+    const entry = await starting;
+    expect(entry.stopped).toBe(true);
+    expect(entry.timer).toBeNull();
+    expect(stop("pending")).toBe(false);
+  });
+
+  it("does not emit a poll that finishes after stop even if listeners remain", async () => {
+    vi.spyOn(watcher, "hasListeners").mockReturnValue(true);
+    const emit = vi.spyOn(watcher, "emitEvent");
+    let resolve;
+    const backend = { listTree: vi.fn().mockResolvedValueOnce({ tree: {} })
+      .mockImplementationOnce(() => new Promise((done) => { resolve = done; })) };
+    const entry = await start("active", backend);
+    const polling = pollOnce("active", entry);
+    stop("active");
+    resolve({ tree: { "late.md": { type: "file", size: 1, mtime: 1 } } });
+    expect(await polling).toMatchObject({ skipped: true, events: 0 });
+    expect(emit).not.toHaveBeenCalled();
+    expect(entry.snapshot.size).toBe(0);
   });
 });

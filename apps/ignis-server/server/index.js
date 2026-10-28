@@ -346,6 +346,7 @@ const server = app.listen(config.port, config.host, async () => {
 
   for (const { vaultId, dir } of remoteVaults.list()) {
     const backend = remoteVaults.backendForVaultId(vaultId);
+    if (!backend) continue; // A runtime disable may have revoked this startup snapshot.
 
     try {
       // chokidar on the empty mount point would never fire, so start the

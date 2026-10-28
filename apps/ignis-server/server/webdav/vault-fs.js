@@ -193,12 +193,13 @@ async function runRemote(backend, rel, name, args) {
 const promises = Object.create(realFs.promises);
 
 for (const name of ROUTED) {
-  promises[name] = function routed(pathOrFd, ...args) {
+  promises[name] = async function routed(pathOrFd, ...args) {
     if (typeof pathOrFd !== "string") {
       // File descriptors only exist for local files.
       return realFs.promises[name](pathOrFd, ...args);
     }
 
+    if (name === "rename" || name === "copyFile") backendForPath(args[0]);
     const mapped = backendForPath(pathOrFd);
 
     if (!mapped) {

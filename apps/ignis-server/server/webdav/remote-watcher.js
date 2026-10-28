@@ -74,7 +74,7 @@ function diff(previous, next) {
 }
 
 async function pollOnce(vaultId, entry) {
-  if (!watcher.hasListeners(vaultId)) {
+  if (entry.stopped || !watcher.hasListeners(vaultId)) {
     return { skipped: true, events: 0 };
   }
 
@@ -90,7 +90,7 @@ async function pollOnce(vaultId, entry) {
     return { error: e.message, events: 0 };
   }
 
-  if (!watcher.hasListeners(vaultId)) {
+  if (entry.stopped || !watcher.hasListeners(vaultId)) {
     return { skipped: true, events: 0 };
   }
 
@@ -105,7 +105,7 @@ async function pollOnce(vaultId, entry) {
   // Advance only the paths actually delivered; remaining changes stay in the
   // diff and are processed by the next poll instead of disappearing.
   for (const event of changes.slice(0, MAX_EVENTS_PER_POLL)) {
-    if (!watcher.hasListeners(vaultId) || !watcher.emitEvent(vaultId, event)) break;
+    if (entry.stopped || !watcher.hasListeners(vaultId) || !watcher.emitEvent(vaultId, event)) break;
     if (event.type === "deleted") entry.snapshot.delete(event.path);
     else entry.snapshot.set(event.path, next.get(event.path));
     emitted++;
@@ -124,6 +124,9 @@ async function start(vaultId, backend, options = {}) {
     options.intervalMs || DEFAULT_INTERVAL_MS,
   );
 
+  // Register before the initial network await so disable can cancel startup.
+  const entry = { backend, snapshot: null, intervalMs, timer: null, running: false, stopped: false };
+  pollers.set(vaultId, entry);
   let snapshot = null;
 
   // Seed the baseline immediately; a missing baseline would report every
@@ -137,7 +140,8 @@ async function start(vaultId, backend, options = {}) {
     console.warn("[webdav] Initial snapshot failed for", vaultId + ":", e.message);
   }
 
-  const entry = { backend, snapshot, intervalMs, timer: null, running: false };
+  if (entry.stopped) return entry;
+  entry.snapshot = snapshot;
 
   entry.timer = setInterval(() => {
     if (entry.running) {
@@ -168,6 +172,7 @@ function stop(vaultId) {
     return false;
   }
 
+  entry.stopped = true;
   clearInterval(entry.timer);
   pollers.delete(vaultId);
 
